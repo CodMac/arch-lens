@@ -1,85 +1,109 @@
-# Go-TreeSitter-Dependency-Analyzer
+# 🔗 Go-TreeSitter-Dependency-Analyzer
 
-一个高性能、多语言支持的 Go 语言命令行工具，用于基于 Tree-sitter 分析软件源码间的依赖调用关系。
+一个高性能、多语言的源代码依赖关系分析工具。本项目利用 **Tree-sitter** 的强大能力解析 AST，通过**两阶段并发处理**和**全局符号表**机制，精确提取项目中的各种依赖关系，并以 JSON Lines (JSONL) 格式输出。
 
-## ✨ 核心特性 (Features)
+## ✨ 核心特性
 
-  * **多语言支持:** 通过 Tree-sitter 动态加载不同语言的语法解析器（如 Go, Python, Java, JavaScript 等）。
-  * **高精度 AST 解析:** 利用 Tree-sitter 生成精确的抽象语法树 (AST)。
-  * **丰富的依赖模型:** 提取函数/方法级别的调用关系、继承、实现和使用关系等，共支持 14 种依赖类型。
-  * **JSONL 输出:** 将分析结果以 JSON Lines 格式输出，方便集成到其他数据处理管道或图形数据库中。
-  * **高并发分析:** 利用 Go 协程实现多文件并行解析，提高分析效率。
+* **多语言支持**: 内建支持 Java 和 Go，并易于扩展到其他 Tree-sitter 支持的语言。
+* **两阶段解析**: 采用 `Definition Pass` (收集定义) 和 `Relation Pass` (提取关系) 两阶段处理，实现准确的跨文件限定名 (Qualified Name, QN) 解析。
+* **全局符号表**: 通过 `GlobalContext` 聚合项目所有定义，解决了传统静态分析中复杂的跨文件引用问题。
+* **并发高效**: 使用 Go 协程 (`processor`) 实现文件解析和关系提取的并发调度，充分利用多核资源。
+* **标准化输出**: 所有依赖关系均输出为易于处理的 JSON Lines (JSONL) 格式。
 
-## ⚙️ 架构设计 (Architecture)
+## ⚙️ 技术栈
 
-为了保证多语言的可扩展性和代码的复用性，项目采用清晰的三层架构设计：
+* **核心语言**: Go (Golang)
+* **AST 解析**: Tree-sitter (通过 `github.com/smacker/tree-sitter` Go 绑定)
+* **语言支持**:
+    * Java: `github.com/tree-sitter/tree-sitter-java`
+    * Go: `github.com/smacker/tree-sitter-go`
+* **数据模型**: 自定义 `DependencyRelation` 模型。
 
-| 层次 | 职责 | 核心组件 | 技术点 |
-| :--- | :--- | :--- | :--- |
-| **0. 底层解析层** | 源码读取，AST 生成 | `parser/` | Tree-sitter Go Bindings |
-| **1. 语言适配层** | AST 遍历，提取语言特征并转换为通用模型 | `extractor/` | 特定语言的 Tree-sitter Query |
-| **2. 模型与输出层** | 收集关系，构建模型，格式化输出 | `model/`, `output/` | Go Struct, JSONL |
+## 🚀 快速开始
 
-## 📐 核心数据模型 (Core Data Model)
+### 1. 安装依赖
 
-分析结果的核心数据结构是 `DependencyRelation`，它描述了**源 (Source)** 与**目标 (Target)** 之间发生的特定**关系 (Type)**。
-
-### 1\. 依赖关系结构 (`DependencyRelation`)
-
-| 字段名称 | 类型 | 描述 |
-| :--- | :--- | :--- |
-| **`Type`** | `string` | 依赖关系的类型（见下方表格） |
-| **`Source`** | `*CodeElement` | 关系的发起方（调用者、导入者等） |
-| **`Target`** | `*CodeElement` | 关系的指向方（被调用函数、被导入包等） |
-| **`Location`** | `*Location` | 关系发生的源码位置 (文件、行号) |
-
-### 2\. 代码元素结构 (`CodeElement`)
-
-代表源码中的一个可识别实体（如文件、函数、变量、类型等）。
-
-| 字段名称 | 类型 | 描述 |
-| :--- | :--- | :--- |
-| **`Kind`** | `string` | 元素类型 (e.g., `FUNCTION`, `CLASS`, `PACKAGE`, `FILE`) |
-| **`Name`** | `string` | 元素的名称 |
-| **`QualifiedName`**| `string` | 元素的完整限定名称 (e.g., `pkg.Struct.Method`) |
-| **`Path`** | `string` | 元素所在的文件路径 |
-
-## 🔗 支持的依赖类型 (Supported Dependency Types)
-
-工具支持提取以下 14 种依赖关系，借鉴了 `multilang-depends/depends` 项目的依赖类型定义：
-
-| Type | 描述 | 示例场景 |
-| :--- | :--- | :--- |
-| **`CALL`** | 一个函数/方法调用了另一个函数/方法。 | `foo()` 调用了 `bar()`。 |
-| **`IMPORT`** | 文件或模块导入/包含了另一个模块或头文件。 | Go 的 `import "fmt"`, C 的 `#include`。 |
-| **`CONTAIN`** | 一个代码块包含另一个代码实体（如类包含成员变量，函数包含局部变量）。 | `class A { B b; }` |
-| **`PARAMETER`** | 函数/方法定义中使用了某个类型作为参数。 | `void foo(TypeX x)`。 |
-| **`RETURN`** | 函数/方法返回了某个类型。 | `TypeY bar() { return y; }`。 |
-| **`THROW`** | 函数/方法抛出了某个异常类型。 | `throw new Exception()`。 |
-| **`IMPLEMENT`** | 类实现了接口，或函数实现了原型/声明。 | `class A implements I`。 |
-| **`EXTENDS`** | 类继承了另一个父类。 | `class Child extends Parent`。 |
-| **`CREATE`** | 函数/方法内部创建了某个类型的实例。 | `obj = new MyClass()`。 |
-| **`USE`** | 表达式或代码块使用了变量、常量或类型（通用引用）。 | 使用全局变量或常量。 |
-| **`CAST`** | 表达式被强制转换为某个类型。 | `(int)d` 或 `static_cast<int>(d)`。 |
-| **`ANNOTATION`**| 代码实体被注解或装饰器修饰。 | Java 的 `@Override`, Python 的 `@decorator`。 |
-| **`MIXIN`** | 类包含了模块，复用其方法和特性。 | Ruby 的 `include Logger`。 |
-| **`IMPL_LINK`** | 隐式实现链接，用于处理 C/C++ 等语言中调用和实现分离的场景。 | 调用原型与实际多重实现体之间的链接。 |
-
-## 💡 使用方法 (Usage)
-
-*(此部分将在实现后完善，预计包含以下内容)*
+确保您已安装 Go 1.18+ 环境。在项目根目录下，运行以下命令拉取所有 Go 依赖和 C 编译的 Tree-sitter 绑定：
 
 ```bash
-# 构建项目
-go build -o dep_analyzer main.go
+go mod tidy
+````
 
-# 运行分析 (分析 Go 语言项目)
-./dep_analyzer analyze --lang go --path /path/to/your/project > results.jsonl
+### 2\. 构建项目
 
-# 运行分析 (分析 Python 语言项目)
-./dep_analyzer analyze --lang python --path /path/to/your/python/project > results.jsonl
+```bash
+go build -o dependency-analyzer
 ```
 
-## 贡献 (Contributing)
+### 3\. 运行分析
 
-欢迎提交 Issue 或 Pull Request 来改进此工具，特别是增加对新语言的适配。
+使用 `-lang` 指定语言，`-path` 指定目标文件或目录。
+
+**分析 Java 项目:**
+
+```bash
+./dependency-analyzer -lang java -path ./path/to/java/project > dependencies.jsonl
+```
+
+**分析 Go 项目 (需要完善提取器):**
+
+```bash
+./dependency-analyzer -lang go -path ./path/to/go/project > dependencies.jsonl
+```
+
+### 命令行参数
+
+| 参数名 | 默认值 | 描述 |
+| :--- | :--- | :--- |
+| `-path` | `.` | 要分析的源代码目录或单个文件路径。 |
+| `-lang` | `java` | 要分析的编程语言 (`java`, `go` 等)。 |
+| `-workers` | `runtime.NumCPU()` | 并发处理文件的协程数量。 |
+
+## 📐 依赖关系模型
+
+项目的核心输出是 `DependencyRelation` 结构体，以 JSON Lines (JSONL) 格式输出到标准输出。
+
+### JSONL 输出示例
+
+```jsonl
+{"Type":"IMPORT","Source":{"Kind":"FILE","Name":"...","QualifiedName":"...","Path":"src/Main.java"},"Target":{"Kind":"PACKAGE","Name":"java.util.List","QualifiedName":"java.util.List"},"Location":{"FilePath":"src/Main.java","StartLine":3,"EndLine":3,"StartColumn":1,"EndColumn":20}}
+{"Type":"CALL","Source":{"Kind":"METHOD","Name":"main","QualifiedName":"com.example.Main.main","Path":"src/Main.java"},"Target":{"Kind":"METHOD","Name":"println","QualifiedName":"java.io.PrintStream.println"},"Location":{"FilePath":"src/Main.java","StartLine":10,"EndLine":10,"StartColumn":8,"EndColumn":25}}
+{"Type":"CONTAIN","Source":{"Kind":"CLASS","Name":"Main","QualifiedName":"com.example.Main","Path":"src/Main.java"},"Target":{"Kind":"METHOD","Name":"main","QualifiedName":"com.example.Main.main"},"Location":{"FilePath":"src/Main.java","StartLine":8,"EndLine":8,"StartColumn":5,"EndColumn":20}}
+```
+
+### 字段说明
+
+| 字段 | 类型 | 描述 |
+| :--- | :--- | :--- |
+| `Type` | string | 依赖类型 (`CALL`, `IMPORT`, `EXTEND`, `USE`, `CONTAIN`, `PARAMETER`, `RETURN` 等)。 |
+| `Source` | CodeElement | 关系的源头实体（调用者、导入者等）。 |
+| `Target` | CodeElement | 关系的目标实体（被调用函数、被导入包等）。 |
+| `Location` | Location | 关系在源码中发生的位置。 |
+
+## 🏗️ 架构概览
+
+本项目采用清晰的分层架构：
+
+1.  **`model/`**: 数据模型和全局符号表(`GlobalContext`)定义。
+2.  **`parser/`**: Tree-sitter 基础封装层，负责加载语言和解析文件。
+3.  **`extractor/`**: **语言适配层**，包含 `DefinitionCollector` 和 `ContextExtractor` 接口的实现。
+      * `extractor/java/`: Java 语言的提取实现。
+      * `extractor/golang/`: Go 语言的提取实现 (待完善)。
+4.  **`processor/`**: 并发调度层，负责管理文件队列和执行两阶段分析。
+5.  **`output/`**: 结果格式化层，负责将模型结构体写入 JSON Lines。
+
+## 🧩 扩展新语言
+
+要添加新的语言支持，您只需要：
+
+1.  引入新的 Tree-sitter 绑定库（例如 `tree-sitter-python`）。
+2.  在 `extractor/` 下创建新的语言目录（例如 `extractor/python/`）。
+3.  实现 `extractor.Extractor` 接口，包括 `CollectDefinitions` 和 `Extract` 两个阶段的逻辑。
+4.  在 `main.go` 中导入新的语言包以触发注册。
+
+-----
+
+> **注意：** 尽管代码框架已完成，但 Go 语言和 Java 提取器中的 QN 解析逻辑 (`resolveQualifiedName`) 仍然依赖于项目级别的上下文信息。对于复杂的动态引用，可能需要集成更高级的类型推导机制。
+
+```
+```
