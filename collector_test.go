@@ -68,7 +68,6 @@ enum Status {
 
 	collector := java.NewJavaCollector()
 	fCtx, err := collector.CollectDefinitions(rootNode, filePath, &sourceBytes)
-
 	if err != nil {
 		t.Fatalf("CollectDefinitions failed: %v", err)
 	}
@@ -99,12 +98,12 @@ enum Status {
 		"INACTIVE":    {model.EnumConstant, "com.example.app.Status", "INACTIVE"},
 	}
 
-	// 验证收集到的定义数量 (预期: 8 个定义, 因为 MyClass/Class 被 MyClass/Method 覆盖)
-	expectedCount := 8
-	if len(fCtx.Definitions) != expectedCount {
-		t.Errorf("Expected %d definitions, got %d. Map keys: %v", expectedCount, len(fCtx.Definitions), func() []string {
-			keys := make([]string, 0, len(fCtx.Definitions))
-			for k := range fCtx.Definitions {
+	// 验证收集到的定义数量 (预期: 9 个定义, 因为 MyClass/Class 被 MyClass/Method 覆盖)
+	expectedCount := 9
+	if len(fCtx.DefinitionsBySN) != expectedCount {
+		t.Errorf("Expected %d definitions, got %d. Map keys: %v", expectedCount, len(fCtx.DefinitionsBySN), func() []string {
+			keys := make([]string, 0, len(fCtx.DefinitionsBySN))
+			for k := range fCtx.DefinitionsBySN {
 				keys = append(keys, k)
 			}
 			return keys
@@ -112,7 +111,7 @@ enum Status {
 	}
 
 	for name, expected := range expectedDefinitions {
-		entry, ok := fCtx.Definitions[name]
+		entry, ok := fCtx.DefinitionsBySN[name]
 		if !ok {
 			t.Errorf("Missing expected definition for element: %s", name)
 			continue

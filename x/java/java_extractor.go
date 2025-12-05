@@ -389,7 +389,7 @@ func resolveQualifiedName(n *sitter.Node, sourceBytes *[]byte, filePath string, 
 	name := getNodeContent(n, *sourceBytes)
 
 	if fc, ok := gc.FileContexts[filePath]; ok {
-		if entry, ok := fc.Definitions[name]; ok {
+		if entry, ok := fc.DefinitionsBySN[name]; ok {
 			return entry.Element.QualifiedName
 		}
 
