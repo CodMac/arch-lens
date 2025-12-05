@@ -15,12 +15,13 @@ const (
 	Namespace ElementKind = "NAMESPACE" // 对应命名空间 (C++, C#)
 
 	// 面向对象/复合类型
-	Class       ElementKind = "CLASS"      // 对应类 (Java, C++, Python, JS)
-	Interface   ElementKind = "INTERFACE"  // 对应接口 (Java, Go, TS)
-	Struct      ElementKind = "STRUCT"     // 对应结构体 (Go, C)
-	Enum        ElementKind = "ENUM"       // 对应枚举 (Java, C++, Rust)
-	Trait       ElementKind = "TRAIT"      // 对应特质/接口 (Rust, Scala)
-	Annotationn ElementKind = "ANNOTATION" //  对应注解 (Java, Python)
+	Class        ElementKind = "CLASS"         // 对应类 (Java, C++, Python, JS)
+	Interface    ElementKind = "INTERFACE"     // 对应接口 (Java, Go, TS)
+	Struct       ElementKind = "STRUCT"        // 对应结构体 (Go, C)
+	Enum         ElementKind = "ENUM"          // 对应枚举 (Java, C++, Rust)
+	EnumConstant ElementKind = "ENUM_Constant" // 对应枚举常量
+	Trait        ElementKind = "TRAIT"         // 对应特质/接口 (Rust, Scala)
+	Annotationn  ElementKind = "ANNOTATION"    //  对应注解 (Java, Python)
 
 	// 可执行体
 	Function ElementKind = "FUNCTION" // 对应独立函数 (C, Go, JS)
@@ -48,11 +49,17 @@ type Location struct {
 
 // CodeElement 描述了源码中的一个可识别实体（Source 或 Target）
 type CodeElement struct {
-	Kind          ElementKind `json:"Kind"`                    // Kind: 元素的类型 (e.g., FUNCTION, CLASS, VARIABLE)
-	Name          string      `json:"Name"`                    // Name: 元素的短名称 (e.g., "main", "CalculateSum")
-	QualifiedName string      `json:"QualifiedName"`           // QualifiedName: 元素的完整限定名称 (e.g., "pkg/util.Utility.CalculateSum")
-	Path          string      `json:"Path"`                    // Path: 元素所在的文件路径 (相对于项目根目录)
-	Signature     string      `json:"Signature,omitempty"`     // Signature: 元素的完整签名（针对函数/方法，包含参数和返回值类型）
-	StartLocation *Location   `json:"StartLocation,omitempty"` // StartLocation: 元素的起始位置
-	EndLocation   *Location   `json:"EndLocation,omitempty"`   // EndLocation: 元素的结束位置
+	Kind          ElementKind   `json:"Kind"`                    // Kind: 元素的类型 (e.g., FUNCTION, CLASS, VARIABLE)
+	Name          string        `json:"Name"`                    // Name: 元素的短名称 (e.g., "main", "CalculateSum")
+	QualifiedName string        `json:"QualifiedName"`           // QualifiedName: 元素的完整限定名称 (e.g., "pkg/util.Utility.CalculateSum")
+	Path          string        `json:"Path"`                    // Path: 元素所在的文件路径 (相对于项目根目录)
+	Signature     string        `json:"Signature,omitempty"`     // Signature: 元素的完整签名（针对函数/方法，包含参数和返回值类型）
+	StartLocation *Location     `json:"StartLocation,omitempty"` // StartLocation: 元素的起始位置
+	EndLocation   *Location     `json:"EndLocation,omitempty"`   // EndLocation: 元素的结束位置
+	Extra         *ElementExtra `json:"ElementExtra,omitempty"`  // ElementExtra 额外信息
+}
+
+// ElementExtra CodeElement的额外信息
+type ElementExtra struct {
+	// todo
 }

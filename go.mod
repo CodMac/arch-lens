@@ -1,6 +1,6 @@
 module github.com/CodMac/go-treesitter-dependency-analyzer
 
-go 1.25.4
+go 1.25.2
 
 require (
 	github.com/tree-sitter/go-tree-sitter v0.24.0

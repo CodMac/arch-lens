@@ -35,11 +35,22 @@ func (c *Collector) CollectDefinitions(rootNode *sitter.Node, filePath string, s
 
 // collectPackageName 独立收集 Package Name
 func (c *Collector) collectPackageName(fCtx *model.FileContext) {
-	// Java package_declaration 是 program 的直接子节点
-	pkgNode := fCtx.RootNode.ChildByFieldName("package_declaration")
+	var pkgNode *sitter.Node
+
+	// BUG FIX: package_declaration 是 program 的非命名子节点，不能使用 ChildByFieldName 查找。
+	// 遍历根节点的所有直接子节点，查找 kind 为 "package_declaration" 的节点。
+	for i := 0; i < int(fCtx.RootNode.ChildCount()); i++ {
+		child := fCtx.RootNode.Child(uint(i))
+		if child != nil && child.Kind() == "package_declaration" {
+			pkgNode = child
+			break
+		}
+	}
+
 	if pkgNode != nil {
-		// package_declaration 的第二个子节点 (索引 1) 通常是 scoped_identifier (包名)
-		if pkgNameNode := pkgNode.Child(1); pkgNameNode != nil {
+		// 修复：package_declaration 的命名子节点 (scoped_identifier/identifier) 没有 field name "name"。
+		// 应该直接获取第一个命名子节点 (索引 0)。
+		if pkgNameNode := pkgNode.NamedChild(0); pkgNameNode != nil {
 			fCtx.PackageName = getNodeContent(pkgNameNode, *fCtx.SourceBytes)
 		}
 	}
@@ -57,8 +68,8 @@ func (c *Collector) collectDefinitionsRecursive(node *sitter.Node, fCtx *model.F
 		fCtx.AddDefinition(elem, parentQN)
 
 		// 3. 更新 QN 前缀
-		// 对于 Class/Interface/Method，它们是容器，新的 QN 是其自身的 QualifiedName
-		if kind == model.Class || kind == model.Interface || kind == model.Method {
+		// 对于 Class/Interface/Enum/Method，它们是容器，新的 QN 是其自身的 QualifiedName
+		if kind == model.Class || kind == model.Interface || kind == model.Enum || kind == model.Method {
 			currentQNPrefix = elem.QualifiedName
 		}
 	}
@@ -100,13 +111,26 @@ func getDefinitionElement(node *sitter.Node, sourceBytes *[]byte, filePath strin
 		if nameNode != nil {
 			return &model.CodeElement{Kind: model.Interface, Name: getNodeContent(nameNode, *sourceBytes), Path: filePath}, model.Interface
 		}
+	case "enum_declaration": // 收集枚举类型
+		nameNode := node.ChildByFieldName("name")
+		// 假设 model 包中定义了 model.Enum
+		if nameNode != nil {
+			// 修复: 统一返回类型为 model.Enum
+			return &model.CodeElement{Kind: model.Enum, Name: getNodeContent(nameNode, *sourceBytes), Path: filePath}, model.Enum
+		}
+	case "enum_constant": // 收集枚举常量
+		nameNode := node.ChildByFieldName("name")
+		if nameNode != nil {
+			return &model.CodeElement{Kind: model.EnumConstant, Name: getNodeContent(nameNode, *sourceBytes), Path: filePath}, model.EnumConstant
+		}
 	case "method_declaration", "constructor_declaration":
 		nameNode := node.ChildByFieldName("name")
 		name := ""
 		if nameNode != nil {
 			name = getNodeContent(nameNode, *sourceBytes)
 		} else if node.Kind() == "constructor_declaration" {
-			if parent := node.Parent(); parent != nil && parent.Kind() == "class_declaration" {
+			if parent := node.Parent(); parent != nil && (parent.Kind() == "class_declaration" || parent.Kind() == "enum_declaration") {
+				// 构造函数名称通常与其父类/父枚举名称相同
 				if classNameNode := parent.ChildByFieldName("name"); classNameNode != nil {
 					name = getNodeContent(classNameNode, *sourceBytes)
 				}
@@ -120,6 +144,7 @@ func getDefinitionElement(node *sitter.Node, sourceBytes *[]byte, filePath strin
 			return &model.CodeElement{Kind: model.Method, Name: name, Path: filePath}, model.Method
 		}
 	case "field_declaration":
+		// 字段声明可能包含多个变量声明，我们只取第一个
 		if vNode := findNamedChildOfType(node, "variable_declarator"); vNode != nil {
 			if nameNode := vNode.ChildByFieldName("name"); nameNode != nil {
 				return &model.CodeElement{Kind: model.Field, Name: getNodeContent(nameNode, *sourceBytes), Path: filePath}, model.Field
@@ -134,7 +159,6 @@ func getNodeContent(n *sitter.Node, sourceBytes []byte) string {
 	if n == nil {
 		return ""
 	}
-	// Utf8Text 存在，接受 []byte 参数
 	return n.Utf8Text(sourceBytes)
 }
 
@@ -144,7 +168,6 @@ func findNamedChildOfType(n *sitter.Node, nodeType string) *sitter.Node {
 		return nil
 	}
 
-	// NamedChildCount() 和 NamedChild(i) 存在
 	for i := 0; i < int(n.NamedChildCount()); i++ {
 		child := n.NamedChild(uint(i))
 		if child != nil && child.Kind() == nodeType {
