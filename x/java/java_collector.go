@@ -120,11 +120,11 @@ func extractModifiers(n *sitter.Node, sourceBytes []byte) []string {
 	// 遍历 modifiers 节点下的所有子节点，只提取关键字修饰符
 	for i := 0; i < int(modifiersNode.ChildCount()); i++ {
 		child := modifiersNode.Child(uint(i))
-		childType := child.Kind()
-		if childType == "public" || childType == "private" || childType == "protected" ||
-			childType == "static" || childType == "final" || childType == "abstract" ||
-			childType == "synchronized" || childType == "transient" || childType == "volatile" ||
-			childType == "default" {
+		childKind := child.Kind()
+		if childKind == "public" || childKind == "private" || childKind == "protected" ||
+			childKind == "static" || childKind == "final" || childKind == "abstract" ||
+			childKind == "synchronized" || childKind == "transient" || childKind == "volatile" ||
+			childKind == "default" {
 
 			modifiers = append(modifiers, getNodeContent(child, sourceBytes))
 		}
@@ -269,7 +269,10 @@ func getDefinitionElement(node *sitter.Node, sourceBytes *[]byte, filePath strin
 		if node.Kind() == "class_declaration" {
 			// SuperClass
 			if extendsNode := node.ChildByFieldName("superclass"); extendsNode != nil {
-				classExtra.SuperClass = getNodeContent(extendsNode.NamedChild(0), *sourceBytes)
+				// superclass 的第一个命名子节点是类型标识符
+				if typeNode := extendsNode.NamedChild(0); typeNode != nil {
+					classExtra.SuperClass = getNodeContent(typeNode, *sourceBytes)
+				}
 			}
 			// Implemented Interfaces
 			if interfacesNode := node.ChildByFieldName("interfaces"); interfacesNode != nil {
@@ -327,6 +330,7 @@ func getDefinitionElement(node *sitter.Node, sourceBytes *[]byte, filePath strin
 		// 提取 Parameters 列表
 		if paramsNode := node.ChildByFieldName("parameters"); paramsNode != nil {
 			if formalParamsNode := paramsNode.NamedChild(0); formalParamsNode != nil {
+				// formal_parameters 节点包含多个 formal_parameter 节点
 				for i := 0; i < int(formalParamsNode.NamedChildCount()); i++ {
 					// 每个 formal_parameter 是一个参数声明
 					methodExtra.Parameters = append(methodExtra.Parameters, getNodeContent(formalParamsNode.NamedChild(uint(i)), *sourceBytes))
@@ -363,7 +367,10 @@ func getDefinitionElement(node *sitter.Node, sourceBytes *[]byte, filePath strin
 		}
 	}
 
-	elem.Extra = extra
+	// 5. 确保 Extra 只在有内容时添加
+	if extra.MethodExtra != nil || extra.ClassExtra != nil || extra.FieldExtra != nil || len(extra.Modifiers) > 0 || extra.ReturnType != "" || extra.Type != "" {
+		elem.Extra = extra
+	}
 
 	return elem, kind
 }

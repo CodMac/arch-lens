@@ -7,6 +7,7 @@ public class User {
     // Contain: User CONTAIN Field (id, username)
     private String id;
     private String username;
+    AddonInfo aInfo;
 
     // Contain: User CONTAIN Field (DEFAULT_ID)
     private static final String DEFAULT_ID = UUID.randomUUID().toString(); // Use: UUID.randomUUID()
@@ -28,5 +29,12 @@ public class User {
     // Parameter: Method PARAMETER String Type
     public void setUsername(String username) {
         this.username = username;
+    }
+
+    public static class AddonInfo {
+        public String name1;
+        private String name2;
+        protected String name3;
+        default String name4;
     }
 }

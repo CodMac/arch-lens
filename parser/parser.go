@@ -92,6 +92,9 @@ func writeASTToFile(rootNode *sitter.Node, filePath string, sourceBytes []byte, 
 	dir := filepath.Dir(filePath)
 	fileName := filepath.Base(filePath)
 	astFileName := fileName + ".ast"
+	if formatAST {
+		astFileName += ".format"
+	}
 	astFilePath := filepath.Join(dir, astFileName)
 
 	// 写入文件
