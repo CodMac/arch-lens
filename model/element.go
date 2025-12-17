@@ -49,9 +49,10 @@ type CodeElement struct {
 
 // ElementExtra CodeElement的额外信息。包含了跨语言（如Java和Go）通用的关键元数据。
 type ElementExtra struct {
-	Modifiers  []string `json:"Modifiers,omitempty"`  // 修饰符列表 (e.g., "public", "private", "static", "final", "abstract")
-	ReturnType string   `json:"ReturnType,omitempty"` // 适用于 Method/Function, Field (Java)
-	Type       string   `json:"Type,omitempty"`       // 适用于 Field/Variable (Go/Java)
+	Modifiers   []string `json:"Modifiers,omitempty"`  // 修饰符列表 (e.g., "public", "private", "static", "final", "abstract")
+	Annotations []string `json:"Annotation,omitempty"` // 注解列表 (e.g., "@Service")
+	ReturnType  string   `json:"ReturnType,omitempty"` // 适用于 Method/Function, Field (Java)
+	Type        string   `json:"Type,omitempty"`       // 适用于 Field/Variable (Go/Java)
 
 	MethodExtra *MethodExtra `json:"MethodExtra,omitempty"` // 仅适用于 Method/Function
 	ClassExtra  *ClassExtra  `json:"ClassExtra,omitempty"`  // 仅适用于 Class/Interface/Struct/Enum

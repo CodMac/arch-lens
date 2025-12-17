@@ -19,7 +19,7 @@ func TestJavaCollector_CollectDefinitions(t *testing.T) {
 	}
 
 	filePath := getTestFilePath("MyClass.java")
-	rootNode, sourceBytes, err := javaParser.ParseFile(filePath, true, false)
+	rootNode, sourceBytes, err := javaParser.ParseFile(filePath, true, true)
 	if err != nil {
 		t.Fatalf("Failed to parser file: %v", err)
 	}

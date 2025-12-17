@@ -102,13 +102,13 @@ func writeASTToFile(rootNode *sitter.Node, filePath string, sourceBytes []byte, 
 }
 
 // formatSExpression 递归遍历抽象语法树（AST）, 并生成格式化的S-expression字符串。
-// 这是从我们上一次讨论中完善的、使用官方库 Node 方法的版本。
 func formatSExpression(node *sitter.Node, sourceCode []byte, indentLevel int) string {
 	indent := strings.Repeat("  ", indentLevel)
 
 	var builder strings.Builder
 	builder.WriteString(fmt.Sprintf("%s(%s", indent, node.Kind()))
 
+	// 不存在child的话，需要从sourceCode中提取content
 	if node.NamedChildCount() == 0 {
 		start := node.StartByte()
 		end := node.EndByte()

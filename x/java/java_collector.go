@@ -49,7 +49,7 @@ func (c *Collector) collectPackageName(fCtx *model.FileContext) {
 	}
 
 	if pkgNode != nil {
-		// package_declaration 的命名子节点是包名 (scoped_identifier/identifier), 没有 field name "name", 应该直接获取第一个命名子节点 (索引 0)。
+		// package_declaration 的命名子节点是包名 (scoped_identifier/identifier)
 		if pkgNameNode := pkgNode.NamedChild(0); pkgNameNode != nil {
 			fCtx.PackageName = getNodeContent(pkgNameNode, *fCtx.SourceBytes)
 		}
@@ -68,7 +68,7 @@ func (c *Collector) collectDefinitionsRecursive(node *sitter.Node, fCtx *model.F
 		fCtx.AddDefinition(elem, parentQN)
 
 		// 3. 更新 QN 前缀
-		// 对于 Class/Interface/Enum/Method，它们是容器，新的 QN 是其自身的 QualifiedName
+		// 对于 Class/Interface/Enum/Method/Annotation，它们是容器，新的 QN 是其自身的 QualifiedName
 		if kind == model.Class || kind == model.Interface || kind == model.Enum || kind == model.Method {
 			currentQNPrefix = elem.QualifiedName
 		}
@@ -108,30 +108,55 @@ func extractLocation(n *sitter.Node, filePath string) *model.Location {
 	}
 }
 
-// extractModifiers 从节点中提取修饰符列表。 仅检查 "modifiers" 命名子节点 (Java)
-func extractModifiers(n *sitter.Node, sourceBytes []byte) []string {
+// extractModifiers 从节点中提取修饰符列表。 遍历所有子节点，包含非命名关键字和命名注解节点。
+func extractModifiersAndAnnotations(n *sitter.Node, sourceBytes []byte) ([]string, []string) {
 	var modifiers []string
+	var annotations []string
+
 	// 查找 modifiers 节点
-	modifiersNode := n.ChildByFieldName("modifiers")
-	if modifiersNode == nil {
-		return modifiers
-	}
-
-	// 遍历 modifiers 节点下的所有子节点，只提取关键字修饰符
-	for i := 0; i < int(modifiersNode.ChildCount()); i++ {
-		child := modifiersNode.Child(uint(i))
-		childKind := child.Kind()
-		if childKind == "public" || childKind == "private" || childKind == "protected" ||
-			childKind == "static" || childKind == "final" || childKind == "abstract" ||
-			childKind == "synchronized" || childKind == "transient" || childKind == "volatile" ||
-			childKind == "default" {
-
-			modifiers = append(modifiers, getNodeContent(child, sourceBytes))
+	var modifiersNode *sitter.Node
+	for i := 0; i < int(n.ChildCount()); i++ {
+		child := n.Child(uint(i))
+		if child.Kind() == "modifiers" {
+			modifiersNode = child
+			break
 		}
-		// 忽略 Annotation
 	}
 
-	return modifiers
+	if modifiersNode == nil {
+		return modifiers, annotations
+	}
+
+	// 提取非命名关键字
+	content := getNodeContent(modifiersNode, sourceBytes)
+	fields := strings.Fields(content)
+	for _, modifier := range fields {
+		trimSpace := strings.TrimSpace(modifier)
+		if isKeywordModifier(trimSpace) {
+			modifiers = append(modifiers, trimSpace)
+		}
+	}
+
+	// 提取注解
+	for i := range modifiersNode.ChildCount() {
+		child := modifiersNode.Child(i)
+		// 检查是否是注解 (annotation, marker_annotation)
+		if strings.Contains(child.Kind(), "annotation") {
+			annotations = append(annotations, getNodeContent(child, sourceBytes))
+		}
+	}
+
+	return modifiers, annotations
+}
+
+// isKeywordModifier 判断文本或 Kind 是否为 Java 关键字修饰符
+func isKeywordModifier(s string) bool {
+	switch s {
+	case "public", "private", "protected", "static", "final", "abstract",
+		"synchronized", "transient", "volatile", "default", "native", "strictfp":
+		return true
+	}
+	return false
 }
 
 // extractMethodSignature 提取方法或构造函数的签名字符串
@@ -139,7 +164,7 @@ func extractMethodSignature(node *sitter.Node, sourceBytes []byte) string {
 	var parts []string
 
 	// 1. 修饰符 (可选)
-	modifiers := extractModifiers(node, sourceBytes)
+	modifiers, _ := extractModifiersAndAnnotations(node, sourceBytes)
 	if len(modifiers) > 0 {
 		parts = append(parts, strings.Join(modifiers, " "))
 	}
@@ -218,6 +243,9 @@ func getDefinitionElement(node *sitter.Node, sourceBytes *[]byte, filePath strin
 			nameNode = vNode.ChildByFieldName("name")
 			kind = model.Field
 		}
+	case "annotation_type_declaration":
+		nameNode = node.ChildByFieldName("name")
+		kind = model.Interface // 注解定义在 model 中通常视为一种接口类型或特殊类
 	}
 
 	if nameNode == nil && (kind == model.Class || kind == model.Interface || kind == model.Enum || kind == model.Field) {
@@ -256,9 +284,12 @@ func getDefinitionElement(node *sitter.Node, sourceBytes *[]byte, filePath strin
 
 	// 4. 收集 Signature 和 Extra 信息
 	extra := &model.ElementExtra{}
-	modifiers := extractModifiers(node, *sourceBytes)
+	modifiers, annotations := extractModifiersAndAnnotations(node, *sourceBytes)
 	if len(modifiers) > 0 {
 		extra.Modifiers = modifiers
+	}
+	if len(annotations) > 0 {
+		extra.Annotations = annotations
 	}
 
 	switch kind {
