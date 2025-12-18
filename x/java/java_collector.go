@@ -18,8 +18,8 @@ func NewJavaCollector() *Collector {
 func (c *Collector) CollectDefinitions(rootNode *sitter.Node, filePath string, sourceBytes *[]byte) (*model.FileContext, error) {
 	fCtx := model.NewFileContext(filePath, rootNode, sourceBytes)
 
-	// 1. 独立处理 Package Name (作为 QN 的前缀)
-	c.collectPackageName(fCtx)
+	// 1. 处理 Package Name 和 Import Declarations
+	c.processTopLevelDeclarations(fCtx)
 
 	// 2. 递归收集定义
 	// 初始 QN Stack 只包含 PackageName（如果存在）
@@ -35,23 +35,34 @@ func (c *Collector) CollectDefinitions(rootNode *sitter.Node, filePath string, s
 	return fCtx, nil
 }
 
-// collectPackageName 独立收集 Package Name
-func (c *Collector) collectPackageName(fCtx *model.FileContext) {
-	var pkgNode *sitter.Node
-
-	// package_declaration 是 program 的非命名子节点，遍历根节点查找。
+// processTopLevelDeclarations 处理包名和导入语句
+func (c *Collector) processTopLevelDeclarations(fCtx *model.FileContext) {
+	// 遍历 program 的直属子节点
 	for i := 0; i < int(fCtx.RootNode.ChildCount()); i++ {
 		child := fCtx.RootNode.Child(uint(i))
-		if child != nil && child.Kind() == "package_declaration" {
-			pkgNode = child
-			break
+		if child == nil {
+			continue
 		}
-	}
 
-	if pkgNode != nil {
-		// package_declaration 的命名子节点是包名 (scoped_identifier/identifier)
-		if pkgNameNode := pkgNode.NamedChild(0); pkgNameNode != nil {
-			fCtx.PackageName = getNodeContent(pkgNameNode, *fCtx.SourceBytes)
+		switch child.Kind() {
+		case "package_declaration":
+			// 提取包名 (例如: package com.example.app;)
+			if pkgNameNode := child.NamedChild(0); pkgNameNode != nil {
+				fCtx.PackageName = getNodeContent(pkgNameNode, *fCtx.SourceBytes)
+			}
+		case "import_declaration":
+			// 提取导入 (例如: import java.util.List;)
+			// 注意：Java 也有 static import 和 wildcard import (*)，这里先处理基础的全限定名导入
+			if importNameNode := child.NamedChild(0); importNameNode != nil {
+				fullImportPath := getNodeContent(importNameNode, *fCtx.SourceBytes)
+				// 获取短名称作为 Key (例如: List)
+				parts := strings.Split(fullImportPath, ".")
+				if len(parts) > 0 {
+					shortName := parts[len(parts)-1]
+					// 填充 model/context.go 中新增的 Imports 映射
+					fCtx.Imports[shortName] = fullImportPath
+				}
+			}
 		}
 	}
 }
@@ -64,11 +75,11 @@ func (c *Collector) collectDefinitionsRecursive(node *sitter.Node, fCtx *model.F
 		parentQN := currentQNPrefix
 		elem.QualifiedName = model.BuildQualifiedName(parentQN, elem.Name)
 
-		// 2. 注册定义
+		// 2. 注册定义 (内部会调用 fc.DefinitionsBySN[elem.Name] = append(...))
 		fCtx.AddDefinition(elem, parentQN)
 
 		// 3. 更新 QN 前缀
-		// 对于 Class/Interface/Enum/Method/Annotation，它们是容器，新的 QN 是其自身的 QualifiedName
+		// 对于 Class/Interface/Enum/Method/Annotation，它们是容器
 		if kind == model.Class || kind == model.Interface || kind == model.Enum || kind == model.Method {
 			currentQNPrefix = elem.QualifiedName
 		}
@@ -80,11 +91,9 @@ func (c *Collector) collectDefinitionsRecursive(node *sitter.Node, fCtx *model.F
 
 	if cursor.GotoFirstChild() {
 		for {
-			// 递归调用，并传入当前 QN 前缀
 			if err := c.collectDefinitionsRecursive(cursor.Node(), fCtx, currentQNPrefix); err != nil {
 				return err
 			}
-
 			if !cursor.GotoNextSibling() {
 				break
 			}
@@ -101,19 +110,18 @@ func extractLocation(n *sitter.Node, filePath string) *model.Location {
 	}
 	return &model.Location{
 		FilePath:    filePath,
-		StartLine:   int(n.StartPosition().Row) + 1, // 行号从 1 开始
+		StartLine:   int(n.StartPosition().Row) + 1,
 		EndLine:     int(n.EndPosition().Row) + 1,
 		StartColumn: int(n.StartPosition().Column),
 		EndColumn:   int(n.EndPosition().Column),
 	}
 }
 
-// extractModifiers 从节点中提取修饰符列表。 遍历所有子节点，包含非命名关键字和命名注解节点。
+// extractModifiersAndAnnotations 提取修饰符和注解
 func extractModifiersAndAnnotations(n *sitter.Node, sourceBytes []byte) ([]string, []string) {
 	var modifiers []string
 	var annotations []string
 
-	// 查找 modifiers 节点
 	var modifiersNode *sitter.Node
 	for i := 0; i < int(n.ChildCount()); i++ {
 		child := n.Child(uint(i))
@@ -127,7 +135,7 @@ func extractModifiersAndAnnotations(n *sitter.Node, sourceBytes []byte) ([]strin
 		return modifiers, annotations
 	}
 
-	// 提取非命名关键字
+	// 提取关键字修饰符
 	content := getNodeContent(modifiersNode, sourceBytes)
 	fields := strings.Fields(content)
 	for _, modifier := range fields {
@@ -138,9 +146,8 @@ func extractModifiersAndAnnotations(n *sitter.Node, sourceBytes []byte) ([]strin
 	}
 
 	// 提取注解
-	for i := range modifiersNode.ChildCount() {
-		child := modifiersNode.Child(i)
-		// 检查是否是注解 (annotation, marker_annotation)
+	for i := 0; i < int(modifiersNode.ChildCount()); i++ {
+		child := modifiersNode.Child(uint(i))
 		if strings.Contains(child.Kind(), "annotation") {
 			annotations = append(annotations, getNodeContent(child, sourceBytes))
 		}
@@ -149,7 +156,6 @@ func extractModifiersAndAnnotations(n *sitter.Node, sourceBytes []byte) ([]strin
 	return modifiers, annotations
 }
 
-// isKeywordModifier 判断文本或 Kind 是否为 Java 关键字修饰符
 func isKeywordModifier(s string) bool {
 	switch s {
 	case "public", "private", "protected", "static", "final", "abstract",
@@ -159,58 +165,42 @@ func isKeywordModifier(s string) bool {
 	return false
 }
 
-// extractMethodSignature 提取方法或构造函数的签名字符串
 func extractMethodSignature(node *sitter.Node, sourceBytes []byte) string {
 	var parts []string
-
-	// 1. 修饰符 (可选)
 	modifiers, _ := extractModifiersAndAnnotations(node, sourceBytes)
 	if len(modifiers) > 0 {
 		parts = append(parts, strings.Join(modifiers, " "))
 	}
-
-	// 2. 返回类型 (对于 method_declaration)
 	if node.Kind() == "method_declaration" {
 		if typeNode := node.ChildByFieldName("type"); typeNode != nil {
 			parts = append(parts, getNodeContent(typeNode, sourceBytes))
 		}
 	}
-
-	// 3. 名称 (method_declaration/constructor_declaration)
 	name := ""
 	nameNode := node.ChildByFieldName("name")
 	if nameNode != nil {
 		name = getNodeContent(nameNode, sourceBytes)
 	} else if node.Kind() == "constructor_declaration" {
-		// 构造函数名称与其父类名称相同
 		if parent := node.Parent(); parent != nil {
 			if classNameNode := parent.ChildByFieldName("name"); classNameNode != nil {
 				name = getNodeContent(classNameNode, sourceBytes)
 			}
 		}
 	}
-
 	if name != "" {
 		parts = append(parts, name)
 	}
-
-	// 4. 参数列表 (formal_parameters)
 	if paramsNode := node.ChildByFieldName("parameters"); paramsNode != nil {
 		parts = append(parts, getNodeContent(paramsNode, sourceBytes))
 	} else if node.Kind() == "method_declaration" || node.Kind() == "constructor_declaration" {
-		// 没有参数的函数/方法也需要添加 ()
 		parts = append(parts, "()")
 	}
-
-	// 5. Throws 子句 (可选)
 	if throwsNode := node.ChildByFieldName("throws"); throwsNode != nil {
 		parts = append(parts, getNodeContent(throwsNode, sourceBytes))
 	}
-
 	return strings.Join(parts, " ")
 }
 
-// getDefinitionElement 辅助函数
 func getDefinitionElement(node *sitter.Node, sourceBytes *[]byte, filePath string) (*model.CodeElement, model.ElementKind) {
 	if node == nil {
 		return nil, ""
@@ -220,7 +210,6 @@ func getDefinitionElement(node *sitter.Node, sourceBytes *[]byte, filePath strin
 	var kind model.ElementKind
 	var nameNode *sitter.Node
 
-	// 1. 尝试获取 NameNode 和 Kind
 	switch node.Kind() {
 	case "class_declaration":
 		nameNode = node.ChildByFieldName("name")
@@ -238,33 +227,30 @@ func getDefinitionElement(node *sitter.Node, sourceBytes *[]byte, filePath strin
 		nameNode = node.ChildByFieldName("name")
 		kind = model.Method
 	case "field_declaration":
-		// 字段声明可能包含多个变量声明，我们只取第一个
 		if vNode := findNamedChildOfType(node, "variable_declarator"); vNode != nil {
 			nameNode = vNode.ChildByFieldName("name")
 			kind = model.Field
 		}
 	case "annotation_type_declaration":
 		nameNode = node.ChildByFieldName("name")
-		kind = model.Interface // 注解定义在 model 中通常视为一种接口类型或特殊类
+		kind = model.Interface
 	}
 
 	if nameNode == nil && (kind == model.Class || kind == model.Interface || kind == model.Enum || kind == model.Field) {
 		return nil, ""
 	}
 
-	// 处理 Name 和 Method 构造函数名称的特殊情况
 	name := ""
 	if nameNode != nil {
 		name = getNodeContent(nameNode, *sourceBytes)
 	} else if node.Kind() == "constructor_declaration" {
-		// 构造函数名称与其父类/父枚举名称相同
 		if parent := node.Parent(); parent != nil && (parent.Kind() == "class_declaration" || parent.Kind() == "enum_declaration") {
 			if classNameNode := parent.ChildByFieldName("name"); classNameNode != nil {
 				name = getNodeContent(classNameNode, *sourceBytes)
 			}
 		}
 		if name == "" {
-			name = "Constructor" // 默认回退名称
+			name = "Constructor"
 		}
 	}
 
@@ -272,17 +258,13 @@ func getDefinitionElement(node *sitter.Node, sourceBytes *[]byte, filePath strin
 		return nil, ""
 	}
 
-	// 2. 构造 CodeElement 基础信息
 	elem = &model.CodeElement{
 		Kind: kind,
 		Name: name,
 		Path: filePath,
 	}
-
-	// 3. 收集 Location
 	elem.Location = extractLocation(node, filePath)
 
-	// 4. 收集 Signature 和 Extra 信息
 	extra := &model.ElementExtra{}
 	modifiers, annotations := extractModifiersAndAnnotations(node, *sourceBytes)
 	if len(modifiers) > 0 {
@@ -294,18 +276,13 @@ func getDefinitionElement(node *sitter.Node, sourceBytes *[]byte, filePath strin
 
 	switch kind {
 	case model.Class, model.Interface, model.Enum:
-		// 收集 Class/Interface/Enum Extra
 		classExtra := &model.ClassExtra{}
-
 		if node.Kind() == "class_declaration" {
-			// SuperClass
 			if extendsNode := node.ChildByFieldName("superclass"); extendsNode != nil {
-				// superclass 的第一个命名子节点是类型标识符
 				if typeNode := extendsNode.NamedChild(0); typeNode != nil {
 					classExtra.SuperClass = getNodeContent(typeNode, *sourceBytes)
 				}
 			}
-			// Implemented Interfaces
 			if interfacesNode := node.ChildByFieldName("interfaces"); interfacesNode != nil {
 				if typeListNode := interfacesNode.NamedChild(0); typeListNode != nil {
 					for i := 0; i < int(typeListNode.NamedChildCount()); i++ {
@@ -313,7 +290,6 @@ func getDefinitionElement(node *sitter.Node, sourceBytes *[]byte, filePath strin
 					}
 				}
 			}
-			// 提取 isAbstract/isFinal (基于 Modifiers)
 			for _, mod := range modifiers {
 				if mod == "abstract" {
 					classExtra.IsAbstract = true
@@ -323,33 +299,23 @@ func getDefinitionElement(node *sitter.Node, sourceBytes *[]byte, filePath strin
 				}
 			}
 		} else if node.Kind() == "interface_declaration" {
-			// Interface 继承 (extends/superinterfaces)
 			if superInterfacesNode := node.ChildByFieldName("superinterfaces"); superInterfacesNode != nil {
 				if typeListNode := superInterfacesNode.NamedChild(0); typeListNode != nil {
 					for i := 0; i < int(typeListNode.NamedChildCount()); i++ {
-						// 接口继承的列表存放在 ImplementedInterfaces 字段中
 						classExtra.ImplementedInterfaces = append(classExtra.ImplementedInterfaces, getNodeContent(typeListNode.NamedChild(uint(i)), *sourceBytes))
 					}
 				}
 			}
 		}
 		extra.ClassExtra = classExtra
-
 	case model.Method:
-		// 收集 Method Extra 和 Signature
 		elem.Signature = extractMethodSignature(node, *sourceBytes)
-		methodExtra := &model.MethodExtra{
-			IsConstructor: node.Kind() == "constructor_declaration",
-		}
-
-		// 提取 ReturnType (对于 method_declaration)
+		methodExtra := &model.MethodExtra{IsConstructor: node.Kind() == "constructor_declaration"}
 		if node.Kind() == "method_declaration" {
 			if typeNode := node.ChildByFieldName("type"); typeNode != nil {
 				extra.ReturnType = getNodeContent(typeNode, *sourceBytes)
 			}
 		}
-
-		// 提取 Throws
 		if throwsNode := node.ChildByFieldName("throws"); throwsNode != nil {
 			if typeListNode := throwsNode.NamedChild(0); typeListNode != nil {
 				for i := 0; i < int(typeListNode.NamedChildCount()); i++ {
@@ -357,48 +323,33 @@ func getDefinitionElement(node *sitter.Node, sourceBytes *[]byte, filePath strin
 				}
 			}
 		}
-
-		// 提取 Parameters 列表
 		if paramsNode := node.ChildByFieldName("parameters"); paramsNode != nil {
 			if formalParamsNode := paramsNode.NamedChild(0); formalParamsNode != nil {
-				// formal_parameters 节点包含多个 formal_parameter 节点
 				for i := 0; i < int(formalParamsNode.NamedChildCount()); i++ {
-					// 每个 formal_parameter 是一个参数声明
 					methodExtra.Parameters = append(methodExtra.Parameters, getNodeContent(formalParamsNode.NamedChild(uint(i)), *sourceBytes))
 				}
 			}
 		}
 		extra.MethodExtra = methodExtra
-
 	case model.Field:
-		// 收集 Field Extra
 		fieldExtra := &model.FieldExtra{}
-
-		// 提取 Type
 		if typeNode := node.ChildByFieldName("type"); typeNode != nil {
 			extra.Type = getNodeContent(typeNode, *sourceBytes)
 		}
-
-		// 提取 IsConstant (Java: final field)
 		for _, mod := range modifiers {
 			if mod == "final" {
 				fieldExtra.IsConstant = true
 				break
 			}
 		}
-
 		extra.FieldExtra = fieldExtra
-
 	case model.EnumConstant:
-		// 收集 EnumConstant Signature (如果有参数)
 		elem.Signature = name
 		if argsNode := node.ChildByFieldName("arguments"); argsNode != nil {
-			// 如果有参数，签名是 NAME(...)
 			elem.Signature += getNodeContent(argsNode, *sourceBytes)
 		}
 	}
 
-	// 5. 确保 Extra 只在有内容时添加
 	if extra.MethodExtra != nil || extra.ClassExtra != nil || extra.FieldExtra != nil || len(extra.Modifiers) > 0 || extra.ReturnType != "" || extra.Type != "" {
 		elem.Extra = extra
 	}
@@ -406,7 +357,6 @@ func getDefinitionElement(node *sitter.Node, sourceBytes *[]byte, filePath strin
 	return elem, kind
 }
 
-// getNodeContent 获取 AST 节点对应的源码文本内容
 func getNodeContent(n *sitter.Node, sourceBytes []byte) string {
 	if n == nil {
 		return ""
@@ -414,12 +364,10 @@ func getNodeContent(n *sitter.Node, sourceBytes []byte) string {
 	return n.Utf8Text(sourceBytes)
 }
 
-// findNamedChildOfType 查找特定类型的命名子节点
 func findNamedChildOfType(n *sitter.Node, nodeType string) *sitter.Node {
 	if n == nil {
 		return nil
 	}
-
 	for i := 0; i < int(n.NamedChildCount()); i++ {
 		child := n.NamedChild(uint(i))
 		if child != nil && child.Kind() == nodeType {
