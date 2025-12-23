@@ -193,10 +193,9 @@ func (fp *FileProcessor) workerPhase2(ctx context.Context, wg *sync.WaitGroup, f
 			fmt.Printf("[Warning P2] Skipping %s, file context not found.\n", filePath)
 			continue
 		}
-		rootNode := gCtx.FileContexts[filePath].RootNode
 
 		// 调用 Extractor 的关系提取方法，传入完整的 GlobalContext
-		relations, err := ext.Extract(rootNode, filePath, gCtx)
+		relations, err := ext.Extract(filePath, gCtx)
 		if err != nil {
 			fmt.Printf("[Warning P2] Failed to extract relations in %s: %v\n", filePath, err)
 			continue

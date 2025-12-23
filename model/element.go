@@ -14,9 +14,9 @@ const (
 	Interface    ElementKind = "INTERFACE"     // 面向对象/复合类型    -> 对应接口       -> 适用(Java, Go, TS)
 	Struct       ElementKind = "STRUCT"        // 面向对象/复合类型    -> 对应结构体   -> 适用(Go, C)
 	Enum         ElementKind = "ENUM"          // 面向对象/复合类型    -> 对应枚举       -> 适用(Java, C++, Rust)
-	EnumConstant ElementKind = "ENUM_Constant" // 面向对象/复合类型    -> 对应枚举常量
+	EnumConstant ElementKind = "ENUM_CONSTANT" // 面向对象/复合类型    -> 对应枚举常量
+	KAnnotation  ElementKind = "ANNOTATION"    // 面向对象/复合类型    -> 对应注解
 	Trait        ElementKind = "TRAIT"         // 面向对象/复合类型    -> 对应特质       -> 适用接口 (Rust, Scala)
-	Annotationn  ElementKind = "ANNOTATION"    // 面向对象/复合类型    -> 对应注解       -> 适用(Java, Python)
 	Function     ElementKind = "FUNCTION"      // 可执行体       -> 对应独立函数  -> 适用(C, Go, JS)
 	Method       ElementKind = "METHOD"        // 可执行体       -> 对应类/结构体的方法
 	Macro        ElementKind = "MACRO"         // 可执行体       -> 对应预处理器宏     -> 适用(C/C++)
