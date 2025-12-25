@@ -7,7 +7,7 @@ import (
 	sitter "github.com/tree-sitter/go-tree-sitter"
 )
 
-// Extractor 增强版：支持内部类、枚举类及其成员的关系提取
+// Extractor 增强版：基于 AST 倒推逻辑，支持内部类、枚举、泛型及注解提取
 type Extractor struct{}
 
 func NewJavaExtractor() *Extractor {
@@ -17,63 +17,79 @@ func NewJavaExtractor() *Extractor {
 // --- Tree-sitter Queries ---
 
 const (
-	// JavaDefinitionQuery 补充了 enum 和内部类的支持
 	JavaDefinitionQuery = `
-       (program
-          [
-             (package_declaration (scoped_identifier) @package_name) @package_def
-             (import_declaration (scoped_identifier) @import_target) @import_def
-             
-             ;; 类与内部类定义
-             (class_declaration
-                name: (identifier) @class_name
-                (superclass (identifier) @extends_class)?
-                (super_interfaces (type_list (identifier) @implements_interface+))?
-                body: (class_body [
-                   ;; 成员变量
-                   (field_declaration 
-                      type: (_) @field_type
-                      (variable_declarator (identifier) @field_name)
-                   ) @field_def
-                   ;; 方法
-                   (method_declaration
-                      type: (_) @return_type
-                      name: (identifier) @method_name
-                      parameters: (formal_parameters (formal_parameter type: (_) @param_type) @param_node+)?
-                      (throws (scoped_type_identifier) @throws_type)?
-                   ) @method_def
-                   ;; 内部类 (Nested Class)
-                   (class_declaration) @inner_class_def
-                   ;; 内部枚举 (Nested Enum)
-                   (enum_declaration) @inner_enum_def
-                ])
-                (modifiers (annotation name: (identifier) @annotation_name)) @annotation_stmt
-             ) @class_def
+      (program
+         [
+            (package_declaration (scoped_identifier) @package_name) @package_def
+            (import_declaration (scoped_identifier) @import_target) @import_def
+            
+            (class_declaration
+               (modifiers
+                  [
+                     (marker_annotation name: (identifier) @annotation_name)
+                     (annotation name: (identifier) @annotation_name)
+                  ] @annotation_stmt
+               )?
+               name: (identifier) @class_name
+               superclass: (superclass (type_identifier) @extends_class)?
+               interfaces: (super_interfaces 
+                  (type_list 
+                     [
+                        (type_identifier) @implements_interface
+                        (generic_type (type_identifier) @implements_interface)
+                     ]+
+                  )
+               )?
+               body: (class_body [
+                  (field_declaration 
+                     type: [
+                        (type_identifier) @field_type
+                        (integral_type) @field_type
+                        (generic_type) @field_type
+                     ]
+                     declarator: (variable_declarator name: (identifier) @field_name)
+                  ) @field_def
+                  (method_declaration
+                     type: [
+                        (type_identifier) @return_type
+                        (integral_type) @return_type
+                        (void_type) @return_type
+                        (generic_type) @return_type
+                     ]
+                     name: (identifier) @method_name
+                     (throws (type_identifier) @throws_type)?
+                  ) @method_def
+                  (constructor_declaration name: (identifier) @method_name) @method_def
+                  (class_declaration) @inner_class_def
+               ])
+            ) @class_def
 
-             ;; 枚举类定义
-             (enum_declaration
-                name: (identifier) @enum_name
-                (super_interfaces (type_list (identifier) @implements_interface+))?
-                body: (enum_body 
-                   (enum_constant name: (identifier) @enum_constant_name) @enum_constant_def
-                )
-             ) @enum_def
-             
-             (interface_declaration
-                name: (identifier) @interface_name
-                (super_interfaces (type_list (identifier) @extends_interface+))?
-             ) @interface_def
-          ]
-       )
+            (enum_declaration
+               name: (identifier) @enum_name
+               body: (enum_body 
+                  (enum_constant name: (identifier) @enum_constant_name) @enum_constant_def
+                  (enum_body_declarations [
+                     (field_declaration) @field_def
+                     (method_declaration) @method_def
+                     (constructor_declaration) @method_def
+                  ]*)
+               )
+            ) @enum_def
+
+            (interface_declaration
+               name: (identifier) @interface_name
+               interfaces: (super_interfaces (type_list (type_identifier) @extends_interface+))?
+            ) @interface_def
+         ]
+      )
     `
-	// 操作关系：涵盖方法调用、对象创建、字段访问等
+
 	JavaRelationQuery = `
        [
           (method_invocation name: (identifier) @call_target) @call_stmt
-          (object_creation_expression type: (unqualified_class_instance_expression type: (identifier) @create_target_name)) @create_stmt
+          (object_creation_expression type: (type_identifier) @create_target_name) @create_stmt
           (field_access field: (identifier) @use_field_name) @use_field_stmt
-          (cast_expression type: (_) @cast_type) @cast_stmt
-          (identifier) @use_identifier
+          (cast_expression type: (type_identifier) @cast_type) @cast_stmt
        ]
     `
 )
@@ -92,16 +108,13 @@ func (e *Extractor) Extract(filePath string, gCtx *model.GlobalContext) ([]*mode
 	}
 
 	relations := make([]*model.DependencyRelation, 0)
-
 	sourceBytes := fCtx.SourceBytes
 	rootNode := fCtx.RootNode
 
-	// 1. 结构和定义（内部类、枚举、包含关系）
 	if err := e.processQuery(rootNode, sourceBytes, tsLang, JavaDefinitionQuery, filePath, gCtx, &relations, e.handleDefinitionAndStructureRelations); err != nil {
 		return nil, err
 	}
 
-	// 2. 操作关系
 	if err := e.processQuery(rootNode, sourceBytes, tsLang, JavaRelationQuery, filePath, gCtx, &relations, e.handleActionRelations); err != nil {
 		return nil, err
 	}
@@ -109,58 +122,76 @@ func (e *Extractor) Extract(filePath string, gCtx *model.GlobalContext) ([]*mode
 	return relations, nil
 }
 
+// handleDefinitionAndStructureRelations 核心逻辑优化
 func (e *Extractor) handleDefinitionAndStructureRelations(q *sitter.Query, match *sitter.QueryMatch, sourceBytes *[]byte, filePath string, gc *model.GlobalContext) ([]*model.DependencyRelation, error) {
 	relations := make([]*model.DependencyRelation, 0)
 
-	sourceNode := match.NodesForCaptureIndex(0)[0]
-	sourceElement := e.determineSourceElement(&sourceNode, sourceBytes, filePath, gc)
+	if len(match.Captures) == 0 {
+		return relations, nil
+	}
+	sourceNode := &match.Captures[0].Node
+
+	sourceElement := e.determineSourceElement(sourceNode, sourceBytes, filePath, gc)
 	if sourceElement == nil {
 		sourceElement = &model.CodeElement{Kind: model.File, QualifiedName: filePath, Path: filePath}
 	}
 
-	// 处理内部类/内部枚举的 CONTAIN 关系
+	// 1. 内部类 (CONTAIN)
 	if innerDef := e.findCapturedNode(q, match, "inner_class_def"); innerDef != nil {
 		nameNode := innerDef.ChildByFieldName("name")
 		if nameNode != nil {
 			relations = append(relations, &model.DependencyRelation{
 				Type:   model.Contain,
 				Source: sourceElement,
-				Target: &model.CodeElement{Kind: model.Class, Name: e.getNodeContent(nameNode, *sourceBytes), QualifiedName: e.resolveQualifiedName(nameNode, sourceBytes, filePath, gc)},
+				Target: e.resolveTargetElement(nameNode, model.Class, sourceBytes, filePath, gc),
 			})
 		}
 	}
 
-	// 处理枚举常量 (Enum -> Enum Constant)
+	// 2. 枚举常量 (CONTAIN)
 	if constantDef := e.findCapturedNode(q, match, "enum_constant_def"); constantDef != nil {
 		nameNode := e.findCapturedNode(q, match, "enum_constant_name")
 		if nameNode != nil {
 			relations = append(relations, &model.DependencyRelation{
 				Type:     model.Contain,
 				Source:   sourceElement,
-				Target:   &model.CodeElement{Kind: model.EnumConstant, Name: e.getNodeContent(nameNode, *sourceBytes)},
+				Target:   e.resolveTargetElement(nameNode, model.EnumConstant, sourceBytes, filePath, gc),
 				Location: e.nodeToLocation(constantDef, filePath),
 			})
 		}
 	}
 
-	// 基础引用关系
+	// 3. 基础结构关系 (优先使用解析后的全名和 Kind)
 	if node := e.findCapturedNode(q, match, "import_target"); node != nil {
-		name := e.getNodeContent(node, *sourceBytes)
 		relations = append(relations, &model.DependencyRelation{
-			Type: model.Import, Source: sourceElement,
-			Target:   &model.CodeElement{Kind: model.Package, Name: name, QualifiedName: name},
-			Location: e.nodeToLocation(node, filePath),
+			Type:   model.Import,
+			Source: sourceElement,
+			Target: e.resolveTargetElement(node, model.Package, sourceBytes, filePath, gc),
 		})
 	}
 	if node := e.findCapturedNode(q, match, "extends_class"); node != nil {
-		relations = append(relations, e.newRel(model.Extend, sourceElement, node, model.Class, sourceBytes, filePath, gc))
+		relations = append(relations, &model.DependencyRelation{
+			Type:     model.Extend,
+			Source:   sourceElement,
+			Target:   e.resolveTargetElement(node, model.Class, sourceBytes, filePath, gc),
+			Location: e.nodeToLocation(node, filePath),
+		})
 	}
 	if node := e.findCapturedNode(q, match, "implements_interface"); node != nil {
-		relations = append(relations, e.newRel(model.Implement, sourceElement, node, model.Interface, sourceBytes, filePath, gc))
+		relations = append(relations, &model.DependencyRelation{
+			Type:     model.Implement,
+			Source:   sourceElement,
+			Target:   e.resolveTargetElement(node, model.Interface, sourceBytes, filePath, gc),
+			Location: e.nodeToLocation(node, filePath),
+		})
 	}
-	// 修正：使用 model.Annotation 作为关系类型，model.KAnnotation 作为目标 Kind
 	if node := e.findCapturedNode(q, match, "annotation_name"); node != nil {
-		relations = append(relations, e.newRel(model.Annotation, sourceElement, node, model.KAnnotation, sourceBytes, filePath, gc))
+		relations = append(relations, &model.DependencyRelation{
+			Type:     model.Annotation,
+			Source:   sourceElement,
+			Target:   e.resolveTargetElement(node, model.KAnnotation, sourceBytes, filePath, gc),
+			Location: e.nodeToLocation(node, filePath),
+		})
 	}
 
 	return relations, nil
@@ -168,57 +199,82 @@ func (e *Extractor) handleDefinitionAndStructureRelations(q *sitter.Query, match
 
 func (e *Extractor) handleActionRelations(q *sitter.Query, match *sitter.QueryMatch, sourceBytes *[]byte, filePath string, gc *model.GlobalContext) ([]*model.DependencyRelation, error) {
 	relations := make([]*model.DependencyRelation, 0)
-	sourceNode := match.NodesForCaptureIndex(0)[0]
-	sourceElement := e.determineSourceElement(&sourceNode, sourceBytes, filePath, gc)
+	if len(match.Captures) == 0 {
+		return relations, nil
+	}
+	sourceNode := &match.Captures[0].Node
+	sourceElement := e.determineSourceElement(sourceNode, sourceBytes, filePath, gc)
 	if sourceElement == nil {
 		sourceElement = &model.CodeElement{Kind: model.File, QualifiedName: filePath, Path: filePath}
 	}
 
-	if node := e.findCapturedNode(q, match, "call_target"); node != nil {
-		relations = append(relations, e.newRel(model.Call, sourceElement, node, model.Method, sourceBytes, filePath, gc))
+	// 行为关系映射
+	mapping := []struct {
+		capName string
+		relType model.DependencyType
+		defKind model.ElementKind
+	}{
+		{"call_target", model.Call, model.Method},
+		{"create_target_name", model.Create, model.Class},
+		{"use_field_name", model.Use, model.Field},
+		{"cast_type", model.Cast, model.Type},
 	}
-	if node := e.findCapturedNode(q, match, "create_target_name"); node != nil {
-		relations = append(relations, e.newRel(model.Create, sourceElement, node, model.Class, sourceBytes, filePath, gc))
-	}
-	if node := e.findCapturedNode(q, match, "use_field_name"); node != nil {
-		relations = append(relations, e.newRel(model.Use, sourceElement, node, model.Field, sourceBytes, filePath, gc))
-	}
-	if node := e.findCapturedNode(q, match, "cast_type"); node != nil {
-		relations = append(relations, e.newRel(model.Cast, sourceElement, node, model.Type, sourceBytes, filePath, gc))
+
+	for _, m := range mapping {
+		if node := e.findCapturedNode(q, match, m.capName); node != nil {
+			relations = append(relations, &model.DependencyRelation{
+				Type:     m.relType,
+				Source:   sourceElement,
+				Target:   e.resolveTargetElement(node, m.defKind, sourceBytes, filePath, gc),
+				Location: e.nodeToLocation(node, filePath),
+			})
+		}
 	}
 
 	return relations, nil
 }
 
-// resolveQualifiedName 利用 GlobalContext 进行符号解析
-func (e *Extractor) resolveQualifiedName(n *sitter.Node, sb *[]byte, fp string, gc *model.GlobalContext) string {
-	name := e.getNodeContent(n, *sb)
+// resolveTargetElement 核心优化：优先从全局上下文查找真实符号信息
+func (e *Extractor) resolveTargetElement(n *sitter.Node, defaultKind model.ElementKind, sb *[]byte, fp string, gc *model.GlobalContext) *model.CodeElement {
+	rawName := e.getNodeContent(n, *sb)
+
+	// 1. 尝试从 GlobalContext 解析
 	fc, ok := gc.FileContexts[fp]
-	if !ok {
-		return name
+	if ok {
+		entries := gc.ResolveSymbol(fc, rawName)
+		if len(entries) > 0 {
+			// 优先使用查找到的第一个确切定义
+			found := entries[0].Element
+			return &model.CodeElement{
+				Kind:          found.Kind,          // 使用真实查找到的类型（如 Enum 还是 Class）
+				Name:          found.Name,          // 使用真实名称
+				QualifiedName: found.QualifiedName, // 使用全限定名
+				Path:          found.Path,
+			}
+		}
 	}
 
-	entries := gc.ResolveSymbol(fc, name)
-	if len(entries) > 0 {
-		return entries[0].Element.QualifiedName
+	// 2. 兜底逻辑：如果解析不到，使用默认 Kind 和 rawName
+	return &model.CodeElement{
+		Kind:          defaultKind,
+		Name:          rawName,
+		QualifiedName: rawName, // 此时由于没解析到，QualifiedName 等同于 rawName
 	}
-
-	return name
 }
 
-// determineSourceElement 向上溯源确定当前节点所属的代码实体
+// determineSourceElement 向上遍历语法树寻找最近的定义容器
 func (e *Extractor) determineSourceElement(n *sitter.Node, sb *[]byte, fp string, gc *model.GlobalContext) *model.CodeElement {
 	curr := n.Parent()
 	for curr != nil {
 		k := curr.Kind()
-		if k == "method_declaration" || k == "class_declaration" || k == "enum_declaration" || k == "interface_declaration" {
+		if k == "method_declaration" || k == "class_declaration" || k == "enum_declaration" || k == "interface_declaration" || k == "constructor_declaration" {
 			nameNode := curr.ChildByFieldName("name")
 			if nameNode != nil {
 				var kind model.ElementKind
 				switch k {
 				case "enum_declaration":
 					kind = model.Enum
-				case "method_declaration":
+				case "method_declaration", "constructor_declaration":
 					kind = model.Method
 				case "interface_declaration":
 					kind = model.Interface
@@ -226,12 +282,8 @@ func (e *Extractor) determineSourceElement(n *sitter.Node, sb *[]byte, fp string
 					kind = model.Class
 				}
 
-				return &model.CodeElement{
-					Kind:          kind,
-					Name:          e.getNodeContent(nameNode, *sb),
-					QualifiedName: e.resolveQualifiedName(nameNode, sb, fp, gc),
-					Path:          fp,
-				}
+				// 这里也调用 resolveTargetElement 确保 Source 也是 Qualified 的
+				return e.resolveTargetElement(nameNode, kind, sb, fp, gc)
 			}
 		}
 		curr = curr.Parent()
@@ -239,10 +291,12 @@ func (e *Extractor) determineSourceElement(n *sitter.Node, sb *[]byte, fp string
 	return nil
 }
 
+// --- 辅助方法保持不变 ---
+
 func (e *Extractor) processQuery(rootNode *sitter.Node, sourceBytes *[]byte, tsLang *sitter.Language, queryStr string, filePath string, gc *model.GlobalContext, relations *[]*model.DependencyRelation, handler RelationHandler) error {
 	q, err := sitter.NewQuery(tsLang, queryStr)
 	if err != nil {
-		return err
+		return fmt.Errorf("Query init error: %w", err)
 	}
 	defer q.Close()
 	qc := sitter.NewQueryCursor()
@@ -259,15 +313,6 @@ func (e *Extractor) processQuery(rootNode *sitter.Node, sourceBytes *[]byte, tsL
 		*relations = append(*relations, newRels...)
 	}
 	return nil
-}
-
-func (e *Extractor) newRel(t model.DependencyType, src *model.CodeElement, targetNode *sitter.Node, targetKind model.ElementKind, sb *[]byte, fp string, gc *model.GlobalContext) *model.DependencyRelation {
-	name := e.getNodeContent(targetNode, *sb)
-	return &model.DependencyRelation{
-		Type: t, Source: src,
-		Target:   &model.CodeElement{Kind: targetKind, Name: name, QualifiedName: e.resolveQualifiedName(targetNode, sb, fp, gc)},
-		Location: e.nodeToLocation(targetNode, fp),
-	}
 }
 
 func (e *Extractor) findCapturedNode(q *sitter.Query, match *sitter.QueryMatch, name string) *sitter.Node {
@@ -294,8 +339,10 @@ func (e *Extractor) nodeToLocation(n *sitter.Node, fp string) *model.Location {
 		return nil
 	}
 	return &model.Location{
-		FilePath:  fp,
-		StartLine: int(n.StartPosition().Row) + 1, EndLine: int(n.EndPosition().Row) + 1,
-		StartColumn: int(n.StartPosition().Column), EndColumn: int(n.EndPosition().Column),
+		FilePath:    fp,
+		StartLine:   int(n.StartPosition().Row) + 1,
+		EndLine:     int(n.EndPosition().Row) + 1,
+		StartColumn: int(n.StartPosition().Column),
+		EndColumn:   int(n.EndPosition().Column),
 	}
 }
