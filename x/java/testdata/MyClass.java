@@ -2,7 +2,9 @@ package com.example.app;
 
 import java.util.List;
 
-@MyClassAnnotation("MyClass")
+@MyClassAnnotation1("MyClass")
+@MyClassAnnotation2(value = "MyClass")
+@MyClassAnnotation3
 public class MyClass implements MyInterface {
 
     // Field 1
@@ -21,6 +23,15 @@ public class MyClass implements MyInterface {
     public List<String> run(int times) {
         return null;
     }
+
+    public static class MyInnerClass {
+        private String a;
+    }
+}
+
+class InnerClass {
+    private String a;
+    private String b = "b";
 }
 
 interface MyInterface {
@@ -32,5 +43,7 @@ enum Status {
     INACTIVE(0) // Enum Constant with arguments
 }
 
-@interface MyClassAnnotation { String value(); }
+@interface MyClassAnnotation1 { String value(); }
+@interface MyClassAnnotation2 { String value(); }
+@interface MyClassAnnotation3 {}
 @interface MyFieldAnnotation { String value(); }

@@ -2,6 +2,7 @@ package model
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 
 	sitter "github.com/tree-sitter/go-tree-sitter"
@@ -13,6 +14,15 @@ type DefinitionEntry struct {
 	ParentQN string       // 父元素的QualifiedName
 }
 
+// ImportEntry 描述一个导入声明的详细信息
+type ImportEntry struct {
+	RawImportPath string      `json:"RawImportPath"` // 原始导入路径 (如 "java.util.List")
+	Alias         string      `json:"Alias"`         // 别名或短名称 (如 "List")
+	Kind          ElementKind `json:"Kind"`          // 导入的类型：Class, Package, Constant(static import)等
+	IsWildcard    bool        `json:"IsWildcard"`    // 是否为通配符导入 (.* 或 /...)
+	Location      *Location   `json:"Location,omitempty"`
+}
+
 // FileContext 存储了单个文件的所有符号定义、包名和源代码内容。
 type FileContext struct {
 	FilePath        string                        // 文件路径
@@ -20,7 +30,7 @@ type FileContext struct {
 	RootNode        *sitter.Node                  // AST根节点
 	SourceBytes     *[]byte                       // 源码内容 (指针)
 	DefinitionsBySN map[string][]*DefinitionEntry // 局部定义查找 (短名称 -> 定义列表), 使用切片支持重载（如多个构造函数）或内部类与方法同名的情况
-	Imports         map[string]string             // 导入表 (短名称/别名 -> 全限定名), 例如 Java: "List" -> "java.util.List"
+	Imports         map[string]*ImportEntry       // Key 为 Alias (如 "List" 或 "L")
 	mutex           sync.RWMutex
 }
 
@@ -31,7 +41,7 @@ func NewFileContext(filePath string, rootNode *sitter.Node, sourceBytes *[]byte)
 		RootNode:        rootNode,
 		SourceBytes:     sourceBytes,
 		DefinitionsBySN: make(map[string][]*DefinitionEntry),
-		Imports:         make(map[string]string),
+		Imports:         make(map[string]*ImportEntry),
 	}
 }
 
@@ -46,6 +56,13 @@ func (fc *FileContext) AddDefinition(elem *CodeElement, parentQN string) {
 	}
 
 	fc.DefinitionsBySN[elem.Name] = append(fc.DefinitionsBySN[elem.Name], entry)
+}
+
+// AddImport 辅助方法：方便 Collector 调用
+func (fc *FileContext) AddImport(alias string, imp *ImportEntry) {
+	fc.mutex.Lock()
+	defer fc.mutex.Unlock()
+	fc.Imports[alias] = imp
 }
 
 // GlobalContext 存储了整个项目范围内的符号信息。
@@ -79,22 +96,19 @@ func (gc *GlobalContext) RegisterFileContext(fc *FileContext) {
 }
 
 // ResolveSymbol 尝试解析一个标识符的具体定义。
-// 返回所有可能的定义，由调用者根据参数签名或 Context 进一步过滤。
+// 优先级：局部定义 > 精确导入 > 同包定义 > 通配符导入 > 绝对路径查找
 func (gc *GlobalContext) ResolveSymbol(fc *FileContext, symbol string) []*DefinitionEntry {
 	gc.mutex.RLock()
 	defer gc.mutex.RUnlock()
 
-	var results []*DefinitionEntry
-
-	// 1. 局部定义优先
+	// 1. 局部定义优先 (当前文件内的类、方法、内部类等)
 	if defs, ok := fc.DefinitionsBySN[symbol]; ok {
-		results = append(results, defs...)
-		return results
+		return defs
 	}
 
-	// 2. 检查 Import (例如 "List" -> "java.util.List")
-	if fullQN, ok := fc.Imports[symbol]; ok {
-		if defs, found := gc.DefinitionsByQN[fullQN]; found {
+	// 2. 检查精确 Import (例如 "List" -> ImportEntry{RawImportPath: "java.util.List"})
+	if imp, ok := fc.Imports[symbol]; ok {
+		if defs, found := gc.DefinitionsByQN[imp.RawImportPath]; found {
 			return defs
 		}
 	}
@@ -107,7 +121,21 @@ func (gc *GlobalContext) ResolveSymbol(fc *FileContext, symbol string) []*Defini
 		}
 	}
 
-	// 4. 兜底：直接按 QN 查找
+	// 4. 处理通配符导入 (例如 Java 中的 import java.util.*)
+	// 遍历所有标记为 IsWildcard 的导入，尝试拼接并查找
+	for _, imp := range fc.Imports {
+		if imp.IsWildcard {
+			// 去掉路径末尾的 "*" 并拼接当前符号
+			// 例如 "java.util.*" -> "java.util." + "List"
+			basePath := strings.TrimSuffix(imp.RawImportPath, "*")
+			wildcardQN := basePath + symbol
+			if defs, ok := gc.DefinitionsByQN[wildcardQN]; ok {
+				return defs
+			}
+		}
+	}
+
+	// 5. 兜底：直接按 QN 查找 (处理代码中使用全限定名调用的情况)
 	if defs, ok := gc.DefinitionsByQN[symbol]; ok {
 		return defs
 	}
