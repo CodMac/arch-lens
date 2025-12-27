@@ -11,5 +11,6 @@ import java.lang.annotation.*;
 @Target({ElementType.TYPE, ElementType.METHOD})
 public @interface Loggable {
     String level() default "INFO";
+
     boolean trace() default false;
 }

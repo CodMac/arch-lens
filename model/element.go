@@ -54,9 +54,10 @@ type ElementExtra struct {
 	Modifiers   []string `json:"Modifiers,omitempty"`  // 修饰符列表 (e.g., "public", "private", "static", "final", "abstract")
 	Annotations []string `json:"Annotation,omitempty"` // 注解列表 (e.g., "@Service")
 
-	MethodExtra *MethodExtra `json:"MethodExtra,omitempty"` // 仅适用于 Method/Function
-	ClassExtra  *ClassExtra  `json:"ClassExtra,omitempty"`  // 仅适用于 Class/Interface/Struct/Enum
-	FieldExtra  *FieldExtra  `json:"FieldExtra,omitempty"`  // 仅适用于 Field/Constant
+	MethodExtra       *MethodExtra       `json:"MethodExtra,omitempty"` // 仅适用于 Method/Function
+	ClassExtra        *ClassExtra        `json:"ClassExtra,omitempty"`  // 仅适用于 Class/Interface/Struct/Enum
+	FieldExtra        *FieldExtra        `json:"FieldExtra,omitempty"`  // 仅适用于 Field/Constant
+	EnumConstantExtra *EnumConstantExtra `json:"EnumConstantExtra,omitempty"`
 }
 
 // MethodExtra 存储方法或函数的特有信息
@@ -79,4 +80,9 @@ type ClassExtra struct {
 type FieldExtra struct {
 	IsConstant bool   `json:"IsConstant,omitempty"` // 是否是常量 (final in Java, const in Go)
 	Type       string `json:"Type,omitempty"`       // 适用于 Field/Variable (Go/Java)
+}
+
+// EnumConstantExtra 保存实例化时传入的原始字符串参数列表
+type EnumConstantExtra struct {
+	Arguments []string `json:"arguments"` // 例如: USER_NOT_FOUND(404, "Not Found") -> ["404", "\"Not Found\""]
 }
