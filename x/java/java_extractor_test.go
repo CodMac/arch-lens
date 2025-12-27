@@ -1,13 +1,14 @@
 package java_test
 
 import (
-	"strings"
+	"fmt"
+	"path/filepath"
 	"testing"
 
-	"github.com/CodMac/go-treesitter-dependency-analyzer/extractor"
 	"github.com/CodMac/go-treesitter-dependency-analyzer/model"
 	"github.com/CodMac/go-treesitter-dependency-analyzer/parser"
 	"github.com/CodMac/go-treesitter-dependency-analyzer/x/java" // 触发 init() 注册
+	"github.com/stretchr/testify/assert"
 )
 
 // 辅助函数：解析并收集定义 (Phase 1)
@@ -36,150 +37,234 @@ func runPhase1Collection(t *testing.T, files []string) *model.GlobalContext {
 	return gc
 }
 
-func TestJavaExtractor_Extract_Integration(t *testing.T) {
+const printRel = false
+
+func printRelations(relations []*model.DependencyRelation) {
+	if !printRel {
+		return
+	}
+
+	for _, rel := range relations {
+		fmt.Printf("Found relation: [%s] -> source(%s)==>target(%s)\n", rel.Type, rel.Source.QualifiedName, rel.Target.QualifiedName)
+	}
+}
+
+// 验证结构关系：CONTAIN
+// 验证行为关系：CREATE（由匿名内部类产生）、Call（由匿名内部类产生）
+func TestJavaExtractor_CallbackManager(t *testing.T) {
 	// 1. 准备测试文件路径
-	// 我们需要加载所有相关文件以构建完整的 GlobalContext，
-	// 这样 Extractor 才能正确解析跨文件引用 (如 UserService 使用 User)。
+	targetFile := getTestFilePath(filepath.Join("com", "example", "service", "CallbackManager.java"))
+
+	// 2. Phase 1: 构建全局上下文 (运行已完成的 Collector)
+	gCtx := runPhase1Collection(t, []string{targetFile})
+
+	// 3. Phase 2: 运行 Extractor
+	ext := java.NewJavaExtractor()
+	relations, err := ext.Extract(targetFile, gCtx)
+	if err != nil {
+		t.Fatalf("Extraction failed: %v", err)
+	}
+
+	printRelations(relations)
+
+	// 4. 验证依赖关系
+	t.Run("Verify Structural Relations", func(t *testing.T) {
+		foundLocalClass := false
+		foundMethodInLocal := false
+		foundRegisterMethod := false
+
+		for _, rel := range relations {
+			// 期望 1: CallbackManager.register -> CONTAIN -> LocalValidator
+			if rel.Type == model.Contain &&
+				rel.Source.Name == "register" &&
+				rel.Target.Name == "LocalValidator" {
+				foundLocalClass = true
+				assert.Equal(t, model.Class, rel.Target.Kind)
+				assert.Equal(t, "com.example.service.CallbackManager.register.LocalValidator", rel.Target.QualifiedName)
+			}
+
+			// 期望 2: LocalValidator -> CONTAIN -> isValid
+			if rel.Type == model.Contain &&
+				rel.Source.Name == "LocalValidator" &&
+				rel.Target.Name == "isValid" {
+				foundMethodInLocal = true
+				assert.Equal(t, model.Method, rel.Target.Kind)
+			}
+
+			// 期望 3: CallbackManager -> CONTAIN -> register
+			if rel.Type == model.Contain &&
+				rel.Source.Name == "CallbackManager" &&
+				rel.Target.Name == "register" {
+				foundRegisterMethod = true
+			}
+		}
+
+		assert.True(t, foundRegisterMethod, "Should find CallbackManager -> register")
+		assert.True(t, foundLocalClass, "Should find register -> LocalValidator (Local Class)")
+		assert.True(t, foundMethodInLocal, "Should find LocalValidator -> isValid")
+	})
+
+	t.Run("Verify Robustness (Anonymous Class)", func(t *testing.T) {
+		// 匿名内部类 Runnable 应该产生 CREATE 关系，但不应该在 CONTAIN 关系中出现（因为它没有名字）
+		foundCreateRunnable := false
+		for _, rel := range relations {
+			// 匿名类创建：new Runnable() { ... }
+			// 由于 Runnable 是外部接口，这里 Target 的 QN 可能就是 "Runnable"
+			if rel.Type == model.Create && rel.Target.Name == "Runnable" {
+				foundCreateRunnable = true
+			}
+
+			// 验证不存在空名称的 Contain 关系
+			if rel.Type == model.Contain {
+				assert.NotEmpty(t, rel.Target.Name, "Target name in CONTAIN relation should not be empty")
+			}
+		}
+		assert.True(t, foundCreateRunnable, "Should capture creation of anonymous Runnable")
+	})
+
+	t.Run("Verify Action Relations", func(t *testing.T) {
+		foundPrintCall := false
+		for _, rel := range relations {
+			// 验证匿名类内部的方法调用：System.out.println
+			if rel.Type == model.Call && rel.Target.Name == "println" {
+				foundPrintCall = true
+
+				// Source 应该是匿名内部类里的 run 方法
+				assert.Equal(t, "run", rel.Source.Name, "The direct source of println should be the run method")
+
+				// 进一步验证 QN，确保它嵌套在 register 下
+				// 预期路径: 包名.CallbackManager.register.run (取决于你 Collector 的递归逻辑)
+				assert.Contains(t, rel.Source.QualifiedName, "CallbackManager.register",
+					"The run method should be scoped under register")
+			}
+		}
+		assert.True(t, foundPrintCall, "Should capture println call inside anonymous class")
+	})
+}
+
+// 验证结构关系：Extend（泛型）、Implement（泛型）、ANNOTATION
+// 验证结构关系：Return、Parameter、Throw
+// 验证行为关系：Create、Call、Cast
+// 验证字段访问： Use
+func TestJavaExtractor_UserServiceImpl(t *testing.T) {
+	// 1. 准备环境：加载目标文件及其依赖项以确保 QN 解析成功
 	testFiles := []string{
-		getTestFilePath("User.java"),
-		getTestFilePath("UserService.java"),
-		getTestFilePath("ErrorCode.java"),
-		getTestFilePath("NotificationException.java"),
+		getTestFilePath(filepath.Join("com", "example", "service", "UserServiceImpl.java")),
+		getTestFilePath(filepath.Join("com", "example", "model", "AbstractBaseEntity.java")),
+		getTestFilePath(filepath.Join("com", "example", "core", "DataProcessor.java")),
+		getTestFilePath(filepath.Join("com", "example", "annotation", "Loggable.java")),
 	}
 
 	// 2. Phase 1: 构建全局上下文 (Symbol Table)
 	gCtx := runPhase1Collection(t, testFiles)
+	targetFile := testFiles[0]
 
-	// 3. Phase 2: 针对 UserService.java 运行 Extractor
-	// UserService.java 是依赖关系最丰富的文件
-	targetFile := getTestFilePath("UserService.java")
-
-	// 获取 Extractor
-	ext, err := extractor.GetExtractor(model.LangJava)
-	if err != nil {
-		t.Fatalf("Failed to get Java extractor: %v", err)
-	}
-
-	// 获取 UserService 的 RootNode (Phase 1 已经解析过，理论上应该复用，这里为了模拟流程重新获取或从 gCtx 拿)
-	// 在真实 Processor 中是直接传递 RootNode 的。这里我们从 gCtx 获取。
-	fCtx := gCtx.FileContexts[targetFile]
-	if fCtx == nil {
-		t.Fatalf("FileContext not found for %s", targetFile)
-	}
-
+	// 3. Phase 2: 运行 Extractor
+	ext := java.NewJavaExtractor()
 	relations, err := ext.Extract(targetFile, gCtx)
 	if err != nil {
-		t.Fatalf("Extractor failed: %v", err)
+		t.Fatalf("Extraction failed: %v", err)
 	}
 
-	// 4. 验证依赖关系
-	// 我们将检查 relations 切片中是否存在特定的关键依赖
-	validateRelations(t, relations)
-}
+	printRelations(relations)
 
-func validateRelations(t *testing.T, relations []*model.DependencyRelation) {
-	// 定义期望存在的依赖关系特征
-	expectations := []struct {
-		relType    model.DependencyType
-		targetName string
-		targetKind model.ElementKind
-		found      bool
-	}{
-		// --- Import ---
-		{model.Import, "com.example.model.User", model.Package, false},
-		{model.Import, "com.example.model.ErrorCode", model.Package, false},
+	// 4. 验证核心结构化关系 (已解决泛型和注解匹配问题)
+	t.Run("Verify Structural Relations (Fixed QN)", func(t *testing.T) {
+		expectations := []struct {
+			relType model.DependencyType
+			target  string // 期望全限定名
+			kind    model.ElementKind
+		}{
+			// 测试 EXTEND 清洗: AbstractBaseEntity<String> -> com.example.model.AbstractBaseEntity
+			{model.Extend, "com.example.model.AbstractBaseEntity", model.Class},
+			// 测试 IMPLEMENT 清洗: DataProcessor<...> -> com.example.core.DataProcessor
+			{model.Implement, "com.example.core.DataProcessor", model.Interface},
+			// 测试 ANNOTATION 清洗: @Loggable -> com.example.annotation.Loggable
+			{model.Annotation, "com.example.annotation.Loggable", model.KAnnotation},
+		}
 
-		// --- Structure (Extend / Implement / Annotation / Contain) ---
-		{model.Implement, "DataService", model.Interface, false},  // UserService implements DataService
-		{model.Annotation, "Service", model.KAnnotation, false},   // @Service
-		{model.Annotation, "Autowired", model.KAnnotation, false}, // @Autowired
-		{model.Contain, "findById", model.Method, false},          // UserService contains findById
-
-		// --- Actions (Call / Create / Use / Cast) ---
-		// Call: repository.findOne(id)
-		{model.Call, "findOne", model.Method, false},
-		// Create: new User(name)
-		{model.Create, "User", model.Class, false},
-		// Create: new NotificationException(...)
-		{model.Create, "NotificationException", model.Class, false},
-		// Use: ErrorCode.USER_NOT_FOUND (Field Access / Enum Constant use)
-		{model.Use, "USER_NOT_FOUND", model.Field, false}, // Tree-sitter query 可能会将其识别为 field access
-		// Cast: (User) ...
-		{model.Cast, "User", model.Type, false},
-	}
-
-	// 遍历实际结果进行匹配
-	for _, rel := range relations {
-		for i := range expectations {
-			exp := &expectations[i]
-			if exp.found {
-				continue
-			}
-
-			// 简单的匹配逻辑：类型匹配且名称包含
-			// 注意：rel.Target.Name 可能是短名，QualifiedName 可能是全名
-			// 这里主要匹配 Name 或 QualifiedName
-			nameMatch := strings.Contains(rel.Target.Name, exp.targetName) ||
-				strings.Contains(rel.Target.QualifiedName, exp.targetName)
-
-			if rel.Type == exp.relType && nameMatch {
-				// 如果期望了 Kind，则校验 Kind
-				if exp.targetKind != "" && rel.Target.Kind != exp.targetKind {
-					// 对于 USE 关系，Tree-sitter 有时将 EnumConstant 识别为 Field，这里做宽容处理
-					if rel.Type == model.Use && (rel.Target.Kind == model.Field || rel.Target.Kind == model.EnumConstant) {
-						// Pass
-					} else {
-						continue
-					}
+		for _, exp := range expectations {
+			found := false
+			for _, rel := range relations {
+				if rel.Type == exp.relType && rel.Target.QualifiedName == exp.target {
+					found = true
+					assert.Equal(t, exp.kind, rel.Target.Kind)
+					break
 				}
-				exp.found = true
-				t.Logf("✅ Found expected relation: [%s] -> %s (%s)", rel.Type, rel.Target.Name, rel.Target.Kind)
+			}
+			assert.True(t, found, "Missing Structural Relation: [%s] -> %s", exp.relType, exp.target)
+		}
+	})
+
+	// 5. 验证新增的丰满关系 (PARAMETER, RETURN, THROW)
+	t.Run("Verify Rich Method Relations", func(t *testing.T) {
+		hasReturn := false
+		hasParam := false
+		hasThrow := false
+		hasOverride := false
+
+		for _, rel := range relations {
+			// 验证 processAll 方法的返回类型 (List)
+			if rel.Type == model.Return && rel.Target.Name == "List" && rel.Source.Name == "processAll" {
+				hasReturn = true
+			}
+			// 验证 processAll 方法的参数类型 (String)
+			if rel.Type == model.Parameter && rel.Target.Name == "String" && rel.Source.Name == "processAll" {
+				hasParam = true
+			}
+			// 验证 processAll 抛出的异常 (RuntimeException)
+			if rel.Type == model.Throw && rel.Target.Name == "RuntimeException" {
+				hasThrow = true
+			}
+			// 验证方法上的注解 (@Override)
+			if rel.Type == model.Annotation && rel.Target.Name == "Override" && rel.Source.Name == "processAll" {
+				hasOverride = true
 			}
 		}
-	}
 
-	// 检查是否有未找到的期望
-	for _, exp := range expectations {
-		if !exp.found {
-			t.Errorf("❌ Missing expected relation: Type=[%s] Target=[%s] Kind=[%s]", exp.relType, exp.targetName, exp.targetKind)
-		}
-	}
+		assert.True(t, hasReturn, "Should extract RETURN relation for processAll")
+		assert.True(t, hasParam, "Should extract PARAMETER relation for batchId")
+		assert.True(t, hasThrow, "Should extract THROW relation for RuntimeException")
+		assert.True(t, hasOverride, "Should extract ANNOTATION relation for @Override")
+	})
 
-	// 额外测试：验证 ErrorCode.java 的 Enum Constant 包含关系
-	// 这部分逻辑在 Extractor 的 handleDefinitionAndStructureRelations 中
-	// 我们不需要重新运行 extractor，只需要写一个新的小测试或者在这里扩展逻辑，
-	// 为了清晰，我们假定上面的测试覆盖了主要流程。
-}
+	// 6. 验证行为关系 (Actions)
+	t.Run("Verify Action Relations", func(t *testing.T) {
+		foundCreate := false
+		foundCall := false
+		foundCast := false
 
-func TestJavaExtractor_EnumStructure(t *testing.T) {
-	// 单独测试 ErrorCode.java 的结构提取
-	file := getTestFilePath("ErrorCode.java")
-	gCtx := runPhase1Collection(t, []string{file})
-
-	ext, _ := extractor.GetExtractor(model.LangJava)
-	relations, err := ext.Extract(file, gCtx)
-	if err != nil {
-		t.Fatalf("Extract failed: %v", err)
-	}
-
-	foundUserNotFound := false
-	foundNameEmpty := false
-
-	for _, rel := range relations {
-		if rel.Type == model.Contain && rel.Target.Kind == model.EnumConstant {
-			if rel.Target.Name == "USER_NOT_FOUND" {
-				foundUserNotFound = true
+		for _, rel := range relations {
+			// new ArrayList<>()
+			if rel.Type == model.Create && rel.Target.Name == "ArrayList" {
+				foundCreate = true
 			}
-			if rel.Target.Name == "NAME_EMPTY" {
-				foundNameEmpty = true
+			// batchId.toUpperCase()
+			if rel.Type == model.Call && rel.Target.Name == "toUpperCase" {
+				foundCall = true
+				assert.Equal(t, "processAll", rel.Source.Name)
+			}
+			// (String) rawData
+			if rel.Type == model.Cast && rel.Target.Name == "String" {
+				foundCast = true
 			}
 		}
-	}
+		assert.True(t, foundCreate, "Should capture Create relation")
+		assert.True(t, foundCall, "Should capture Call relation")
+		assert.True(t, foundCast, "Should capture Cast relation")
+	})
 
-	if !foundUserNotFound {
-		t.Error("Failed to extract Enum Constant 'USER_NOT_FOUND' in ErrorCode")
-	}
-	if !foundNameEmpty {
-		t.Error("Failed to extract Enum Constant 'NAME_EMPTY' in ErrorCode")
-	}
+	// 7. 验证字段访问与 Source 溯源
+	t.Run("Verify Field Access and Constructor Source", func(t *testing.T) {
+		foundFieldUse := false
+		for _, rel := range relations {
+			// 构造函数内的 this.id 访问
+			if rel.Type == model.Use && rel.Target.Name == "id" {
+				foundFieldUse = true
+				// 构造函数的 Source Name 应该被识别为 UserServiceImpl
+				assert.Equal(t, "UserServiceImpl", rel.Source.Name)
+			}
+		}
+		assert.True(t, foundFieldUse, "Should capture Use relation for 'id' in constructor")
+	})
 }
