@@ -1,9 +1,10 @@
 package main_test
 
 import (
-	sitter "github.com/tree-sitter/go-tree-sitter"
 	"path/filepath"
 	"testing"
+
+	sitter "github.com/tree-sitter/go-tree-sitter"
 
 	"github.com/CodMac/go-treesitter-dependency-analyzer/model"
 	"github.com/CodMac/go-treesitter-dependency-analyzer/parser"
