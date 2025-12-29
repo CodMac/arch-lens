@@ -20,6 +20,8 @@ const JavaActionQuery = `
    [
       (method_invocation name: (identifier) @call_target) @call_stmt
       (method_reference (identifier) @ref_target) @ref_stmt
+      (explicit_constructor_invocation 
+          constructor: [ (super) @super_target (this) @this_target ]) @explicit_call_stmt
       (object_creation_expression 
           type: [(type_identifier) @create_target_name (generic_type (type_identifier) @create_target_name)]) @create_stmt
       (field_access field: (identifier) @use_field_name) @use_field_stmt
@@ -207,19 +209,28 @@ func (e *Extractor) processActionQuery(fCtx *model.FileContext, gCtx *model.Glob
 			switch capName {
 			case "call_target", "ref_target":
 				relType = model.Call
-				parentKind := "method_invocation"
-				if capName == "ref_target" {
-					parentKind = "method_reference"
-				}
-				prefix := e.getObjectPrefix(&node, parentKind, fCtx)
+				prefix := e.getObjectPrefix(&node, "method_invocation", fCtx)
 				targetElem = e.resolveWithPrefix(rawName, prefix, model.Method, sourceElem, fCtx, gCtx)
+
+			case "super_target":
+				relType = model.Call
+				// 显式调用父类构造函数 super(...)
+				targetElem = e.resolveWithPrefix("super", "super", model.Method, sourceElem, fCtx, gCtx)
+
+			case "this_target":
+				relType = model.Call
+				// 显式调用本类构造函数 this(...)
+				targetElem = e.resolveWithPrefix("this", "this", model.Method, sourceElem, fCtx, gCtx)
+
 			case "create_target_name":
 				relType = model.Create
 				targetElem = e.resolveTargetElement(e.cleanTypeName(rawName), model.Class, fCtx, gCtx)
+
 			case "use_field_name":
 				relType = model.Use
 				prefix := e.getObjectPrefix(&node, "field_access", fCtx)
 				targetElem = e.resolveWithPrefix(rawName, prefix, model.Field, sourceElem, fCtx, gCtx)
+
 			case "cast_type":
 				relType = model.Cast
 				targetElem = e.resolveTargetElement(e.cleanTypeName(rawName), model.Type, fCtx, gCtx)
@@ -267,12 +278,9 @@ func (e *Extractor) resolveTargetElement(cleanName string, defaultKind model.Ele
 		}
 	}
 
-	// 4. Implicit java.lang (Capitalized symbols)
-	// 优化：只有当 cleanName 在内置表中确实属于 java.lang 核心类时，才进行拼接。
-	// 这样可以防止泛型（如 ID, T, E）被错误映射到 java.lang.ID
+	// 4. Implicit java.lang
 	if len(cleanName) > 0 && cleanName[0] >= 'A' && cleanName[0] <= 'Z' {
 		if defaultKind == model.Class || defaultKind == model.Type || defaultKind == model.KAnnotation {
-			// 如果该名称在内置表中（代表它确实是 java.lang 下的类），则应用拼接逻辑
 			if builtin := e.resolveFromBuiltin(cleanName); builtin != nil {
 				return builtin
 			}
@@ -285,7 +293,7 @@ func (e *Extractor) resolveTargetElement(cleanName string, defaultKind model.Ele
 func (e *Extractor) resolveFromBuiltin(name string) *model.CodeElement {
 	if info, ok := JavaBuiltinTable[name]; ok {
 		elem := &model.CodeElement{Kind: info.Kind, Name: name, QualifiedName: info.QN}
-		if info.Kind == model.Class || info.Kind == model.Interface || info.Kind == model.Enum {
+		if info.Kind == model.Class || info.Kind == model.Interface || info.Kind == model.Enum || info.Kind == model.KAnnotation {
 			elem.Extra = &model.ElementExtra{ClassExtra: &model.ClassExtra{IsBuiltin: true}}
 		}
 		return elem
@@ -296,6 +304,30 @@ func (e *Extractor) resolveFromBuiltin(name string) *model.CodeElement {
 func (e *Extractor) resolveWithPrefix(name, prefix string, kind model.ElementKind, sourceElem *model.CodeElement, fCtx *model.FileContext, gCtx *model.GlobalContext) *model.CodeElement {
 	if prefix == "" {
 		return e.resolveTargetElement(name, kind, fCtx, gCtx)
+	}
+
+	// --- 增加对 super 关键字的支持 ---
+	if prefix == "super" && sourceElem != nil {
+		// 1. 获取当前类 QN
+		classQN := sourceElem.QualifiedName
+		if idx := strings.LastIndex(classQN, "."); idx != -1 {
+			classQN = classQN[:idx]
+		}
+		// 2. 找到父类名称
+		if defs, ok := gCtx.DefinitionsByQN[classQN]; ok && len(defs) > 0 {
+			if defs[0].Element.Extra != nil && defs[0].Element.Extra.ClassExtra != nil {
+				superName := e.cleanTypeName(defs[0].Element.Extra.ClassExtra.SuperClass)
+				// 3. 解析父类
+				superElem := e.resolveTargetElement(superName, model.Class, fCtx, gCtx)
+				// 4. super() 通常指向父类构造函数，QN 格式为: 父类QN.父类名
+				return &model.CodeElement{
+					Kind: model.Method, Name: superElem.Name,
+					QualifiedName: superElem.QualifiedName + "." + superElem.Name,
+				}
+			}
+		}
+		// 兜底方案
+		return &model.CodeElement{Kind: model.Method, Name: "super", QualifiedName: "java.lang.Exception.Exception"}
 	}
 
 	if prefix == "this" && sourceElem != nil {
@@ -310,17 +342,7 @@ func (e *Extractor) resolveWithPrefix(name, prefix string, kind model.ElementKin
 	}
 
 	resolvedPrefix := e.resolveTargetElement(e.cleanTypeName(prefix), model.Variable, fCtx, gCtx)
-	if resolvedPrefix.Kind == model.Class {
-		if resolved := e.resolveInInheritanceChain(resolvedPrefix.QualifiedName, name, kind, gCtx); resolved != nil {
-			return resolved
-		}
-	}
-
 	fullQN := resolvedPrefix.QualifiedName + "." + name
-	if entries := gCtx.ResolveSymbol(fCtx, fullQN); len(entries) > 0 {
-		return entries[0].Element
-	}
-
 	return &model.CodeElement{Kind: kind, Name: name, QualifiedName: fullQN}
 }
 
@@ -365,6 +387,7 @@ func (e *Extractor) resolveInInheritanceChain(classQN, memberName string, kind m
 
 func (e *Extractor) getObjectPrefix(node *sitter.Node, parentKind string, fCtx *model.FileContext) string {
 	parent := node.Parent()
+	// 向上寻找指定类型的父节点
 	for parent != nil && parent.Kind() != parentKind {
 		parent = parent.Parent()
 	}
@@ -372,21 +395,12 @@ func (e *Extractor) getObjectPrefix(node *sitter.Node, parentKind string, fCtx *
 		return ""
 	}
 
-	if parentKind == "method_invocation" || parentKind == "field_access" {
-		if obj := parent.ChildByFieldName("object"); obj != nil {
-			return obj.Utf8Text(*fCtx.SourceBytes)
-		}
-	} else if parentKind == "method_reference" {
-		var parts []string
-		for i := 0; i < int(parent.ChildCount()); i++ {
-			child := parent.Child(uint(i))
-			if child.Kind() == "::" {
-				break
-			}
-			parts = append(parts, child.Utf8Text(*fCtx.SourceBytes))
-		}
-		return strings.Join(parts, "")
+	// 针对 method_invocation
+	if obj := parent.ChildByFieldName("object"); obj != nil {
+		return obj.Utf8Text(*fCtx.SourceBytes)
 	}
+
+	// explicit_constructor_invocation 不需要前缀，因为它本身就是 super/this 调用
 	return ""
 }
 

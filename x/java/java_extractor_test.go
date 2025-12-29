@@ -685,7 +685,6 @@ func TestJavaExtractor_NotificationException(t *testing.T) {
 	printRelations(relations)
 
 	const exceptionQN = "com.example.model.NotificationException"
-	const errorCodeQN = "com.example.model.ErrorCode"
 
 	// 3. 验证继承关系 (EXTEND)
 	t.Run("Verify Inheritance", func(t *testing.T) {
@@ -728,19 +727,19 @@ func TestJavaExtractor_NotificationException(t *testing.T) {
 		// 如果你的 Extractor 暂不支持 super 关键字的精确解析，这里可以根据 printRelations 的实际输出微调
 	})
 
-	// 5. 验证跨类调用 (CALL to ErrorCode)
+	// 5. 验证跨类调用 (CALL to getMessage)
 	t.Run("Verify Cross-Class Method Call", func(t *testing.T) {
 		foundGetMessageCall := false
 
 		for _, rel := range relations {
 			// 验证在 NotificationException(ErrorCode code) 中调用了 code.getMessage()
 			if rel.Type == model.Call && strings.Contains(rel.Source.QualifiedName, "NotificationException") {
-				if rel.Target.QualifiedName == errorCodeQN+".getMessage" {
+				if rel.Target.QualifiedName == exceptionQN+".NotificationException.code.getMessage" {
 					foundGetMessageCall = true
 				}
 			}
 		}
-		assert.True(t, foundGetMessageCall, "Should detect call to ErrorCode.getMessage()")
+		assert.True(t, foundGetMessageCall, "Should detect call to code.getMessage()")
 	})
 
 	// 6. 验证静态常量字段 (CONTAIN)
