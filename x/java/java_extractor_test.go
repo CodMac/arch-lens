@@ -444,7 +444,7 @@ func TestJavaExtractor_ConfigService(t *testing.T) {
 // 验证异常抛出关系 (THROW)
 // 验证默认方法内的调用 (Default Method)
 func TestJavaExtractor_InterfaceAndGenerics(t *testing.T) {
-	// 1. 准备测试文件路径 (假设 AbstractBaseEntity 也在扫描路径中)
+	// 1. 准备测试文件路径
 	targetFile := getTestFilePath(filepath.Join("com", "example", "core", "DataProcessor.java"))
 
 	// 2. 执行收集与提取
@@ -504,5 +504,255 @@ func TestJavaExtractor_InterfaceAndGenerics(t *testing.T) {
 			}
 		}
 		assert.True(t, foundSystemOut, "Should resolve System.out usage inside default method")
+	})
+}
+
+// 验证结构化定义关系（Implement、Return、Parameter、Contain）
+// 验证方法体内的动作关系（Use）
+// 验证内部类 QN 拼接逻辑
+func TestJavaExtractor_BaseEntity(t *testing.T) {
+	targetFile := getTestFilePath(filepath.Join("com", "example", "model", "AbstractBaseEntity.java"))
+
+	gCtx := runPhase1Collection(t, []string{targetFile})
+	ext := java.NewJavaExtractor()
+	relations, err := ext.Extract(targetFile, gCtx)
+	assert.NoError(t, err)
+	printRelations(relations)
+
+	const entityQN = "com.example.model.AbstractBaseEntity"
+	const metaQN = "com.example.model.AbstractBaseEntity.EntityMeta"
+
+	// 1. 验证结构化定义关系 (Structural Relations)
+	t.Run("Verify Definitions", func(t *testing.T) {
+		foundSerializable := false
+		foundGetIdReturn := false
+		foundSetIdParam := false
+		foundInnerClass := false
+
+		for _, rel := range relations {
+			// 接口实现
+			if rel.Type == model.Implement && rel.Source.QualifiedName == entityQN {
+				if rel.Target.QualifiedName == "java.io.Serializable" {
+					foundSerializable = true
+				}
+			}
+			// 方法返回类型 (ID)
+			if rel.Type == model.Return && rel.Source.QualifiedName == entityQN+".getId" {
+				if rel.Target.Name == "ID" {
+					foundGetIdReturn = true
+				}
+			}
+			// 方法参数类型 (ID)
+			if rel.Type == model.Parameter && rel.Source.QualifiedName == entityQN+".setId" {
+				if rel.Target.Name == "ID" {
+					foundSetIdParam = true
+				}
+			}
+			// 内部类包含
+			if rel.Type == model.Contain && rel.Source.QualifiedName == entityQN {
+				if rel.Target.QualifiedName == metaQN {
+					foundInnerClass = true
+				}
+			}
+		}
+		assert.True(t, foundSerializable, "Should implement Serializable")
+		assert.True(t, foundGetIdReturn, "getId should return ID")
+		assert.True(t, foundSetIdParam, "setId should have ID parameter")
+		assert.True(t, foundInnerClass, "Should contain EntityMeta")
+	})
+
+	// 2. 验证方法体内的动作关系 (Action/Behavioral Relations)
+	t.Run("Verify Method Body Actions", func(t *testing.T) {
+		foundFieldUse := false
+
+		for _, rel := range relations {
+			// 核心修复点：验证 setId 方法对 id 字段的访问 (this.id = id)
+			// Source 是方法，Target 是字段
+			if rel.Type == model.Use && rel.Source.QualifiedName == entityQN+".setId" {
+				if rel.Target.QualifiedName == entityQN+".id" {
+					foundFieldUse = true
+				}
+			}
+		}
+		assert.True(t, foundFieldUse, "Method setId should USE field id")
+	})
+
+	// 3. 验证内部类 QN 拼接逻辑
+	t.Run("Verify Inner Class Methods", func(t *testing.T) {
+		foundStringReturn := false
+		for _, rel := range relations {
+			if rel.Type == model.Return && rel.Source.QualifiedName == metaQN+".getTableName" {
+				if rel.Target.QualifiedName == "java.lang.String" {
+					foundStringReturn = true
+				}
+			}
+		}
+		assert.True(t, foundStringReturn, "EntityMeta.getTableName should return String")
+	})
+}
+
+// 验证枚举结构 (CONTAIN)
+// 验证构造函数中的字段使用 (USE)
+// 验证方法返回类型 (RETURN)
+func TestJavaExtractor_EnumErrorCode(t *testing.T) {
+	// 1. 准备测试文件路径
+	targetFile := getTestFilePath(filepath.Join("com", "example", "model", "ErrorCode.java"))
+
+	// 2. 执行收集与提取
+	gCtx := runPhase1Collection(t, []string{targetFile})
+	ext := java.NewJavaExtractor()
+	relations, err := ext.Extract(targetFile, gCtx)
+	assert.NoError(t, err)
+	printRelations(relations)
+
+	const enumQN = "com.example.model.ErrorCode"
+
+	// 3. 验证枚举结构 (CONTAIN)
+	t.Run("Verify Enum Structure", func(t *testing.T) {
+		foundConstants := map[string]bool{"USER_NOT_FOUND": false, "NAME_EMPTY": false}
+		foundFields := map[string]bool{"code": false, "message": false}
+		foundMethods := map[string]bool{"getCode": false, "getMessage": false, "ErrorCode": false}
+
+		for _, rel := range relations {
+			if rel.Type == model.Contain && rel.Source.QualifiedName == enumQN {
+				name := rel.Target.Name
+				if _, ok := foundConstants[name]; ok {
+					foundConstants[name] = true
+				}
+				if _, ok := foundFields[name]; ok {
+					foundFields[name] = true
+				}
+				if _, ok := foundMethods[name]; ok {
+					foundMethods[name] = true
+				}
+			}
+		}
+
+		for name, found := range foundConstants {
+			assert.True(t, found, "Enum should contain constant: "+name)
+		}
+		assert.True(t, foundFields["code"], "Enum should contain field: code")
+		assert.True(t, foundMethods["getCode"], "Enum should contain method: getCode")
+		assert.True(t, foundMethods["ErrorCode"], "Enum should contain constructor: ErrorCode")
+	})
+
+	// 4. 验证构造函数中的字段使用 (USE)
+	t.Run("Verify Constructor Field Usage", func(t *testing.T) {
+		foundCodeUse := false
+		foundMessageUse := false
+
+		// 构造函数的 QN 通常为 enumQN.ErrorCode
+		const constructorQN = enumQN + ".ErrorCode"
+
+		for _, rel := range relations {
+			if rel.Type == model.Use && rel.Source.QualifiedName == constructorQN {
+				if rel.Target.QualifiedName == enumQN+".code" {
+					foundCodeUse = true
+				}
+				if rel.Target.QualifiedName == enumQN+".message" {
+					foundMessageUse = true
+				}
+			}
+		}
+		assert.True(t, foundCodeUse, "Constructor should USE field 'code'")
+		assert.True(t, foundMessageUse, "Constructor should USE field 'message'")
+	})
+
+	// 5. 验证方法返回类型 (RETURN)
+	t.Run("Verify Method Returns", func(t *testing.T) {
+		foundStringReturn := false
+		for _, rel := range relations {
+			if rel.Type == model.Return && rel.Source.Name == "getMessage" {
+				// String 应通过 JavaBuiltinTable 解析为 java.lang.String
+				if rel.Target.QualifiedName == "java.lang.String" {
+					foundStringReturn = true
+				}
+			}
+		}
+		assert.True(t, foundStringReturn, "getMessage should return java.lang.String")
+	})
+}
+
+func TestJavaExtractor_NotificationException(t *testing.T) {
+	// 1. 准备测试文件路径
+	targetFile := getTestFilePath(filepath.Join("com", "example", "model", "NotificationException.java"))
+
+	// 2. 执行收集与提取
+	gCtx := runPhase1Collection(t, []string{targetFile})
+	ext := java.NewJavaExtractor()
+	relations, err := ext.Extract(targetFile, gCtx)
+	assert.NoError(t, err)
+	printRelations(relations)
+
+	const exceptionQN = "com.example.model.NotificationException"
+	const errorCodeQN = "com.example.model.ErrorCode"
+
+	// 3. 验证继承关系 (EXTEND)
+	t.Run("Verify Inheritance", func(t *testing.T) {
+		foundExtendException := false
+		for _, rel := range relations {
+			if rel.Type == model.Extend && rel.Source.QualifiedName == exceptionQN {
+				// Exception 应该通过 JavaBuiltinTable 解析为 java.lang.Exception
+				if rel.Target.QualifiedName == "java.lang.Exception" {
+					foundExtendException = true
+				}
+			}
+		}
+		assert.True(t, foundExtendException, "NotificationException should extend java.lang.Exception")
+	})
+
+	// 4. 验证构造函数参数与 Super 调用 (PARAMETER & CALL)
+	t.Run("Verify Constructor and Super Call", func(t *testing.T) {
+		foundThrowableParam := false
+		foundSuperCall := false
+
+		const constructor1QN = exceptionQN + ".NotificationException"
+
+		for _, rel := range relations {
+			// 验证参数类型 Throwable (内置类)
+			if rel.Type == model.Parameter && rel.Source.QualifiedName == constructor1QN {
+				if rel.Target.QualifiedName == "java.lang.Throwable" {
+					foundThrowableParam = true
+				}
+			}
+			// 验证 super(message, cause) 产生的 Call 关系
+			// 注意：在 Java 中 super() 指向父类构造函数，QN 通常被解析为 java.lang.Exception.Exception
+			if rel.Type == model.Call && rel.Source.QualifiedName == constructor1QN {
+				if strings.Contains(rel.Target.QualifiedName, "Exception.Exception") || rel.Target.Name == "super" {
+					foundSuperCall = true
+				}
+			}
+		}
+		assert.True(t, foundThrowableParam, "Constructor should have java.lang.Throwable parameter")
+		assert.True(t, foundSuperCall, "Constructor should have Exception.Exception call")
+		// 如果你的 Extractor 暂不支持 super 关键字的精确解析，这里可以根据 printRelations 的实际输出微调
+	})
+
+	// 5. 验证跨类调用 (CALL to ErrorCode)
+	t.Run("Verify Cross-Class Method Call", func(t *testing.T) {
+		foundGetMessageCall := false
+
+		for _, rel := range relations {
+			// 验证在 NotificationException(ErrorCode code) 中调用了 code.getMessage()
+			if rel.Type == model.Call && strings.Contains(rel.Source.QualifiedName, "NotificationException") {
+				if rel.Target.QualifiedName == errorCodeQN+".getMessage" {
+					foundGetMessageCall = true
+				}
+			}
+		}
+		assert.True(t, foundGetMessageCall, "Should detect call to ErrorCode.getMessage()")
+	})
+
+	// 6. 验证静态常量字段 (CONTAIN)
+	t.Run("Verify Static Field", func(t *testing.T) {
+		foundSerialField := false
+		for _, rel := range relations {
+			if rel.Type == model.Contain && rel.Source.QualifiedName == exceptionQN {
+				if rel.Target.Name == "serialVersionUID" {
+					foundSerialField = true
+				}
+			}
+		}
+		assert.True(t, foundSerialField, "Should contain serialVersionUID field")
 	})
 }

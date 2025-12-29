@@ -15,7 +15,7 @@ const (
 	Implement  DependencyType = "IMPLEMENT"  // Implement: Class implements Interface, or function implements Prototype.
 	Extend     DependencyType = "EXTEND"     // Extend: Class inherits from another Base Class.
 	Create     DependencyType = "CREATE"     // Create: Function/Method instantiates/creates an object of Target type.
-	Use        DependencyType = "USE"        // Use: Source expression/block uses Target variable/constant/type (General Reference).
+	Use        DependencyType = "USE"        // Use: Source expression/block uses Target field/variable/constant/type (General Reference).
 	Cast       DependencyType = "CAST"       // Cast: Expression is explicitly cast to Target type.
 	ImplLink   DependencyType = "IMPL_LINK"  // ImplLink: Implementation Link (e.g., C/C++ linking prototype to implementation).
 	Annotation DependencyType = "ANNOTATION" // Annotation: Code element is decorated by Target Annotation/Decorator.
