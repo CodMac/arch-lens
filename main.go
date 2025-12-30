@@ -46,23 +46,25 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Fprintf(os.Stderr, "[3/4] 💾 正在以 %s 格式导出结果...\n", *format)
+	fmt.Fprintf(os.Stderr, "[3/4] 💾 正在执行导出 (格式: %s)...\n", *format)
 	if err := os.MkdirAll(*outDir, 0755); err != nil {
 		fmt.Fprintf(os.Stderr, "❌ 创建目录失败: %v\n", err)
 		os.Exit(1)
 	}
 
-	// 根据参数执行不同的导出逻辑
 	switch *format {
 	case "jsonl":
 		exportAsJSONL(*outDir, gCtx, rels)
 	case "mermaid":
-		// 这里调用你之前的 Mermaid 导出函数
 		mermaidPath := filepath.Join(*outDir, "visualization.html")
-		// exportMermaidHTML(mermaidPath, gCtx, rels) // 假设该函数已定义
-		fmt.Fprintf(os.Stderr, "    可视化文件已生成: %s\n", mermaidPath)
+		if err := output.ExportMermaidHTML(mermaidPath, gCtx, rels); err != nil {
+			fmt.Fprintf(os.Stderr, "❌ 生成 Mermaid 失败: %v\n", err)
+		} else {
+			fmt.Fprintf(os.Stderr, "    ✅ 可视化网页已生成: %s\n", mermaidPath)
+		}
 	default:
-		fmt.Fprintf(os.Stderr, "❌ 不支持的输出格式: %s\n", *format)
+		fmt.Fprintf(os.Stderr, "⚠️ 未知的格式 %s，默认导出为 jsonl\n", *format)
+		exportAsJSONL(*outDir, gCtx, rels)
 	}
 
 	totalDuration := time.Since(startTime)
