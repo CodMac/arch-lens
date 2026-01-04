@@ -10,9 +10,14 @@ import (
 	"time"
 
 	"github.com/CodMac/go-treesitter-dependency-analyzer/model"
+	"github.com/CodMac/go-treesitter-dependency-analyzer/noisefilter"
 	"github.com/CodMac/go-treesitter-dependency-analyzer/output"
 	"github.com/CodMac/go-treesitter-dependency-analyzer/processor"
-	_ "github.com/CodMac/go-treesitter-dependency-analyzer/x/java"
+)
+
+const (
+	MaxMermaidNodes = 150
+	MaxMermaidEdges = 250
 )
 
 func main() {
@@ -22,10 +27,17 @@ func main() {
 	jobs := flag.Int("jobs", 4, "并发数")
 	outDir := flag.String("out-dir", "./output", "输出目录")
 	format := flag.String("format", "jsonl", "输出格式 (jsonl, mermaid)")
+	skipExternal := flag.Bool("skip-external", true, "是否隐藏外部库及噪音依赖")
 
 	flag.Parse()
 
 	startTime := time.Now()
+
+	// 1. 根据语言获取对应的 NoiseFilter
+	noiseFilter, err := noisefilter.GetNoiseFilter(model.Language(*lang))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "⚠️ 无法获取过滤器: %v\n", err)
+	}
 
 	fmt.Fprintf(os.Stderr, "[1/4] 🚀 正在扫描目录: %s\n", *path)
 	actualFilter := *filter
@@ -46,58 +58,47 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Fprintf(os.Stderr, "[3/4] 💾 正在执行导出 (格式: %s)...\n", *format)
-	if err := os.MkdirAll(*outDir, 0755); err != nil {
-		fmt.Fprintf(os.Stderr, "❌ 创建目录失败: %v\n", err)
-		os.Exit(1)
+	fmt.Fprintf(os.Stderr, "[3/4] 💾 正在准备导出...\n")
+	os.MkdirAll(*outDir, 0755)
+
+	targetFormat := *format
+	if targetFormat == "mermaid" {
+		nodeCount := 0
+		for _, defs := range gCtx.DefinitionsByQN {
+			nodeCount += len(defs)
+		}
+		if nodeCount > MaxMermaidNodes || len(rels) > MaxMermaidEdges {
+			fmt.Fprintf(os.Stderr, "    ⚠️ 数据过大，降级为 jsonl\n")
+			targetFormat = "jsonl"
+		}
 	}
 
-	switch *format {
+	switch targetFormat {
 	case "jsonl":
-		exportAsJSONL(*outDir, gCtx, rels)
+		exportAsJSONL(*outDir, gCtx, rels, *skipExternal, noiseFilter)
 	case "mermaid":
 		mermaidPath := filepath.Join(*outDir, "visualization.html")
-		if err := output.ExportMermaidHTML(mermaidPath, gCtx, rels); err != nil {
-			fmt.Fprintf(os.Stderr, "❌ 生成 Mermaid 失败: %v\n", err)
-		} else {
-			fmt.Fprintf(os.Stderr, "    ✅ 可视化网页已生成: %s\n", mermaidPath)
-		}
+		output.ExportMermaidHTML(mermaidPath, gCtx, rels, *skipExternal, noiseFilter)
 	default:
-		fmt.Fprintf(os.Stderr, "⚠️ 未知的格式 %s，默认导出为 jsonl\n", *format)
-		exportAsJSONL(*outDir, gCtx, rels)
+		exportAsJSONL(*outDir, gCtx, rels, *skipExternal, noiseFilter)
 	}
 
-	totalDuration := time.Since(startTime)
-	fmt.Fprintf(os.Stderr, "\n[4/4] ✨ 任务完成! 总耗时: %v\n", totalDuration.Round(time.Millisecond))
+	fmt.Fprintf(os.Stderr, "\n[4/4] ✨ 完成! 耗时: %v\n", time.Since(startTime).Round(time.Millisecond))
 }
 
-// 具体的 JSONL 导出调用，封装了对 output 包的调用
-func exportAsJSONL(outDir string, gCtx *model.GlobalContext, rels []*model.DependencyRelation) {
-	elemPath := filepath.Join(outDir, "element.jsonl")
-	relPath := filepath.Join(outDir, "relation.jsonl")
-
-	elemCount, _ := output.ExportElements(elemPath, gCtx)
-	fmt.Fprintf(os.Stderr, "    已导出元素: %d 个 -> %s\n", elemCount, elemPath)
-
-	relCount, _ := output.ExportRelations(relPath, rels, gCtx)
-	fmt.Fprintf(os.Stderr, "    已导出关系: %d 条 (含包含关系) -> %s\n", relCount, relPath)
+func exportAsJSONL(outDir string, gCtx *model.GlobalContext, rels []*model.DependencyRelation, skip bool, nf noisefilter.NoiseFilter) {
+	output.ExportElements(filepath.Join(outDir, "element.jsonl"), gCtx)
+	output.ExportRelations(filepath.Join(outDir, "relation.jsonl"), rels, gCtx, skip, nf)
 }
 
-// scanFiles 保持不变...
 func scanFiles(root, filter string) ([]string, error) {
-	re, err := regexp.Compile(filter)
-	if err != nil {
-		return nil, err
-	}
+	re, _ := regexp.Compile(filter)
 	var files []string
-	err = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() {
-			return err
-		}
-		if re.MatchString(path) {
+	filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err == nil && !info.IsDir() && re.MatchString(path) {
 			files = append(files, path)
 		}
 		return nil
 	})
-	return files, err
+	return files, nil
 }

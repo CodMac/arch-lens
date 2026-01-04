@@ -13,11 +13,11 @@ import (
 )
 
 type FileProcessor struct {
-	Language    model.Language
-	OutputAST   bool
-	FormatAST   bool
-	Concurrency int
-	kipBuiltin  bool // 是否跳过内置类/标准库的依赖提取
+	Language     model.Language
+	OutputAST    bool
+	FormatAST    bool
+	Concurrency  int
+	SkipExternal bool // 是否过滤非源码定义的外部依赖
 }
 
 func NewFileProcessor(lang model.Language, outputAST, formatAST bool, concurrency int) *FileProcessor {
