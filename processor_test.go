@@ -1,11 +1,11 @@
 package main_test
 
 import (
-	"context"
-	"github.com/CodMac/go-treesitter-dependency-analyzer/processor"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/CodMac/go-treesitter-dependency-analyzer/processor"
 
 	"github.com/CodMac/go-treesitter-dependency-analyzer/model"
 	_ "github.com/CodMac/go-treesitter-dependency-analyzer/x/java" // 确保注册了 Java 处理器
@@ -39,7 +39,7 @@ func TestFileProcessor_ProcessFiles(t *testing.T) {
 
 	// 3. 执行分析
 	filePaths := []string{fileA, fileB}
-	rels, gCtx, err := fp.ProcessFiles(context.Background(), tmpDir, filePaths)
+	rels, gCtx, err := fp.ProcessFiles(tmpDir, filePaths)
 	if err != nil {
 		t.Fatalf("ProcessFiles failed: %v", err)
 	}

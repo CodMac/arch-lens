@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/CodMac/go-treesitter-dependency-analyzer/context"
 	"github.com/CodMac/go-treesitter-dependency-analyzer/parser"
 	"github.com/CodMac/go-treesitter-dependency-analyzer/x/java"
 	"github.com/stretchr/testify/assert"
@@ -33,7 +34,7 @@ func getJavaParser(t *testing.T) parser.Parser {
 
 const printEle = true
 
-func printCodeElements(fCtx *model.FileContext) {
+func printCodeElements(fCtx *context.FileContext) {
 	if !printEle {
 		return
 	}

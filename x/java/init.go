@@ -2,6 +2,7 @@ package java
 
 import (
 	"github.com/CodMac/go-treesitter-dependency-analyzer/collector"
+	"github.com/CodMac/go-treesitter-dependency-analyzer/context"
 	"github.com/CodMac/go-treesitter-dependency-analyzer/extractor"
 	"github.com/CodMac/go-treesitter-dependency-analyzer/model"
 	"github.com/CodMac/go-treesitter-dependency-analyzer/noisefilter"
@@ -26,5 +27,10 @@ func init() {
 	// 注册 噪音过滤器 工厂函数
 	noisefilter.RegisterNoiseFilter(model.LangJava, func() noisefilter.NoiseFilter {
 		return &NoiseFilter{}
+	})
+
+	// 注册 符号解析器  工厂函数
+	context.RegisterSymbolResolver(model.LangJava, func() context.SymbolResolver {
+		return &SymbolResolver{}
 	})
 }

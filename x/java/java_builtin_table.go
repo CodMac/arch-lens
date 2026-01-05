@@ -4,7 +4,7 @@ import "github.com/CodMac/go-treesitter-dependency-analyzer/model"
 
 // --- Java 内置符号表 ---
 
-var JavaBuiltinTable = map[string]struct {
+var BuiltinTable = map[string]struct {
 	QN   string
 	Kind model.ElementKind
 }{

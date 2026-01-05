@@ -1,141 +1,128 @@
-# Go Tree-sitter Dependency Analyzer
+# Go-TreeSitter Dependency Analyzer
 
-一个基于 **Tree-sitter** 的高性能、多语言（当前深耕 Java）源代码依赖分析引擎。它能够深入理解代码语义，跨越文件边界，提取出包含继承、调用、引用及现代语言特性的完整依赖图谱。
+一个基于 **Tree-sitter** 的高性能、插件化多语言源码依赖分析引擎。
 
-## ✨ 核心特性
+该工具旨在通过 AST（抽象语法树）解析，跨越物理文件边界，构建出包含**层级结构（Containment）与逻辑引用（Logic Dependency）的完整代码知识图谱。虽然目前以 Java 为首个深度支持的语言，但其核心框架设计为语言无关**。
 
-* **深度语义提取**：不仅仅是正则匹配，而是基于 AST（抽象语法树）解析出包含类、方法、字段、注解等层级的全量定义。
-* **跨文件符号解析**：具备全局上下文感知能力，能够准确处理跨类的继承链、静态导入及接口实现。
-* **现代 Java 全特性支持**：
-* **Java 17+**：支持 `Record`（紧凑构造函数、隐式访问器）、`Sealed Classes`。
-* **复杂作用域**：精确识别方法内部的**局部类 (Local Class)** 及匿名内部类。
-* **泛型处理**：支持泛型擦除后的 QN 匹配，同时在详细信息中保留完整泛型签名。
+## 🏗️ 核心架构
 
+本项目采用解耦的**三阶段处理流水线**，确保了在复杂符号解析下的高性能表现：
 
-* **高性能并发流水线**：采用两阶段（Phase 1: 符号收集，Phase 2: 关系提取）异步处理模型，充分利用多核性能。
-* **工业级产物**：输出标准的 **JSON Lines (JSONL)** 格式，易于对接 Neo4j、D3.js 等图数据库或可视化工具。
-* **开发友好**：内置 AST 格式化导出工具，助力开发者快速调试 Tree-sitter 查询语句。
+1. **Phase 1: 符号收集 (Collection)**：并发扫描文件，提取类、方法、变量定义，构建全局符号索引（Global Context）。
+2. **Phase 2: 层次补全 (Stitching)**：根据包名及路径，自动织入 `Package -> File -> Class` 的物理与逻辑归属关系。
+3. **Phase 3: 关系提取 (Extraction)**：基于 Tree-sitter Query 捕获动作（如 Call, Create），并利用**继承链算法**进行精确的符号消歧。
 
 ---
 
-## 🏗 技术架构
+## 📂 核心模块说明
 
-分析器采用两阶段解耦架构，确保了符号解析的准确性：
+| 模块 | 路径 | 职责 |
+| --- | --- | --- |
+| **Model** | `/model` | 定义通用的代码元素、位置信息及关系类型（语言无关）。 |
+| **Parser** | `/parser` | 封装 Tree-sitter 解析逻辑，提供 AST 格式化输出工具。 |
+| **Context** | `/context` | 维护全局符号表（Symbol Table），提供跨文件的符号查找能力。 |
+| **Processor** | `/processor` | 核心调度引擎，负责驱动三阶段流水线的并发执行。 |
+| **Language Extensions** | `/x` | 语言特定实现（如 `/x/java`），包含该语言的收集器、提取器及解析规则。 |
 
-1. **Phase 1: Collector (定义收集)**
-* 扫描项目所有文件。
-* 生成唯一的 **Qualified Name (QN)**（例如：`pkg.Class.method(String[])`）。
-* 构建全局符号索引（Global Context）。
+---
 
+## 📊 数据模型 (Data Model)
 
-2. **Phase 2: Extractor (关系提取)**
-* 利用 Tree-sitter Query 捕获动作（Call, Create, Use, Cast）。
-* **符号消歧**：根据继承链（Inheritance Chain）和导入表（Import Table）自动补全缺失的 QN 路径。
-* 建立关联边（Dependency Relations）。
+分析器的输出由 **CodeElement（节点）** 和 **DependencyRelation（边）** 组成。
 
+### 1. CodeElement (代码元素)
 
+```go
+type CodeElement struct {
+    Name          string       // 元素名称 (如: getUser)
+    Kind          ElementKind  // 类型 (Class, Method, Field, etc.)
+    QualifiedName string       // 全限定名 (如: com.auth.Service.getUser)
+    Path          string       // 相对文件路径
+    Location      *Location    // 行列位置信息
+    Signature     string       // 原始代码签名
+}
+
+```
+
+### 2. DependencyRelation (依赖关系)
+
+在分析器中，`CodeElement` 是图论中的**顶点**，而 `DependencyRelation` 则是带权的有向**边**，记录了发起方（Source）与目标方（Target）的精确语义关联。
+
+```go
+type DependencyRelation struct {
+    Type     RelationType // 关系类型 (如 CALL, EXTEND)
+    Source   *CodeElement // 发起方 (如：调用者方法)
+    Target   *CodeElement // 目标方 (如：被调用的方法)
+    Location *Location    // 关系发生的精确源码位置
+}
+
+```
+
+#### 关系分类详述
+
+| 分类 | 类型 | 语义说明        | 捕捉场景示例                                    |
+| --- | - |-------------|-------------------------------------------|
+| **组织结构** | **CONTAIN** | 逻辑层级包含/成员归属 | 包包含类、文件包含类、类包含方法、类包含字段                    |
+| **定义依赖** | **EXTEND** | 继承关系        | 类继承、接口继承（支持跨文件追踪）                         |
+|  | **IMPLEMENT** | 实现关系        | 类实现接口                                     |
+|  | **PARAMETER** | 参数依赖        | 方法签名中的入参类型                                |
+|  | **RETURN** | 返回值依赖       | 方法签名中的返回类型                                |
+|  | **ANNOTATION** | 元数据引用       | 类或方法上标注的注解                                |
+| **逻辑动作** | **CALL** | 方法/函数调用     | 1. `obj.save()` 2. `super()` 调用 3. 静态导入调用 |
+|  | **CREATE** | 实例化         | `new UserService()` 捕获                    |
+|  | **USE** | 成员访问        | 访问字段或静态常量                                 |
+|  | **CAST** | 类型强转        | `(User) obj` 中的类型依赖                       |
+
+---
+
+## 🛠️ 语言特性支持
+
+### Java 特性 (Current)
+
+* **现代语法**: 深度支持 **Java 17+ Record**（自动生成隐式访问器、解析紧凑构造函数）。
+* **符号消歧**: 自动处理 `java.lang` 隐式导入、`static` 导入及 `.*` 通配符导入。
+* **继承链解析**: 递归搜索父类/接口，精准定位 `this.xxx` 或 `super.yyy` 成员的真实来源。
+* **内置过滤**: 内置 `NoiseFilter`，自动屏蔽 JDK 内部噪音（`sun.*`）及常用工具（`lombok`, `slf4j`）。
 
 ---
 
 ## 🚀 快速开始
 
-### 环境要求
+### 1. 引入与初始化
 
-* Go 1.22+
-* 依赖于 Tree-sitter 及其语言绑定（如 `tree-sitter-java`）
+```go
+import (
+    "github.com/CodMac/go-treesitter-dependency-analyzer/processor"
+    "github.com/CodMac/go-treesitter-dependency-analyzer/model"
+    _ "github.com/CodMac/go-treesitter-dependency-analyzer/x/java" // 显式注册 Java 插件
+)
 
-### 安装
+func main() {
+    // 创建处理器：指定语言、是否导出并格式化AST、并发数
+    fp := processor.NewFileProcessor(model.LangJava, true, true, 8)
 
-```bash
-git clone https://github.com/CodMac/go-treesitter-dependency-analyzer.git
-cd go-treesitter-dependency-analyzer
-go mod tidy
-go build -o analyzer main.go
-
-```
-
-### 使用示例
-
-分析一个 Java 项目并将结果保存到 `./out` 目录：
-
-```bash
-./analyzer -lang java -path /path/to/your/java_project -jobs 8 -out-dir ./out
+    // 执行分析：传入项目根目录及目标文件列表
+    rels, gCtx, err := fp.ProcessFiles("./my-project", files)
+}
 
 ```
 
-**命令行参数说明：**
+---
 
-* `-lang`: 分析的语言（目前主打 `java`）。
-* `-path`: 源码根目录。
-* `-jobs`: 并发工作协程数（默认 4）。
-* `-out-dir`: 结果输出目录。
-* `-filter`: 选填，用于过滤特定文件（正则）。
+## 🤝 开源贡献：如何快速开发新语言插件？
+
+本项目通过 `x/` 目录实现插件化。若要增加对 **Go, Python, C++** 等语言的支持，仅需四步：
+
+1. **定义 Language**: 在 `model/language.go` 中增加语言标识。
+2. **实现 Collector**: 定义如何从该语言的 AST 中识别“定义”（定义收集逻辑）。
+3. **实现 Extractor**: 编写 Tree-sitter Query 定义如何捕获动作型依赖（如 Call, Create）。
+4. **实现 SymbolResolver**: 定义该语言的作用域规则（如 Go 的首字母可见性）。
+5. **注册插件**: 在新包的 `init()` 中注册上述实现。
+
+> **提示**：可利用 `/parser` 提供的 `formatSExpression` 工具将目标语言 AST 导出，辅助编写 Query。
 
 ---
 
-## 📊 数据模式
+## 📜 License
 
-### 1. 元素 (Element)
-
-存储于 `element.jsonl`，代表代码中的每一个实体。
-
-| 字段 | 说明 | 示例 |
-| :--- | :--- | :--- |
-| **Kind** | 类型 | `Class`, `Method`, `Field`, `Interface` |
-| **Name** | 短名称 | `UserService` |
-| **QualifiedName** | 唯一路径 | `com.service.UserService.getUser(long)` |
-| **Path** | 文件相对路径 | `src/main/java/com/service/UserService.java` |
-| **Extra** | 扩展信息 | 注解、修饰符、方法签名、是否为 JDK 内置类 |
-
-### 2. 关系 (Relation)
-
-存储于 `relation.jsonl`，代表实体间的连接。
-
-| 关系类型 | 说明 |
-| :--- | :--- |
-| **CONTAIN** | 包含关系（类包含方法、包包含类） |
-| **EXTEND/IMPLEMENT** | 继承与接口实现 |
-| **CALL** | 方法调用（含 `super()` 和 `this()`） |
-| **CREATE** | 对象实例化（`new` 操作） |
-| **USE** | 字段/常量访问 |
-| **ANNOTATION** | 类或方法上的注解引用 |
-| **RETURN/PARAMETER** | 签名中的类型依赖 |
-
----
-
-## 🛠 开发与调试
-
-### AST 格式化导出
-
-为了方便调试，解析器支持将 Tree-sitter 的 AST 以格式化的 S-Expression 导出：
-
-1. 在代码中启用 `FormatAST: true`。
-2. 分析后会生成 `.java.ast.format` 文件，清晰展示语法树嵌套结构：
-```lisp
-(class_declaration
-  name: (identifier "UserService")
-  body: (class_body
-    (method_declaration
-      name: (identifier "save")
-      ...)))
-
-```
-
-
-
-### 符号解析策略
-
-本项目内置了 `JavaBuiltinTable`，能够自动识别并链接到 JDK 核心库（如 `java.lang.System`, `java.util.List`）。对于项目内代码，它会沿着 **继承链 (Inheritance Chain)** 向上寻找成员定义，从而精准定位类似 `this.id` 的来源。
-
----
-
-## 🗺 路线图
-
-* [x] 并发处理流水线。
-* [x] Java 17 现代语法支持。
-* [x] JSONL 流式导出。
-* [ ] 增加对 **Go** 语言的全面支持。
-* [ ] 导出到 **DOT** 格式以支持 Graphviz 绘图。
-* [ ] 循环依赖检测（Circular Dependency Detection）。
-
----
+本项目基于 [MIT License](https://www.google.com/search?q=LICENSE) 协议开源。

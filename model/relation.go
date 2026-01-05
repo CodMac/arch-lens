@@ -9,7 +9,7 @@ const (
 	// Import 导入 imports Target package/module
 	// e.g., [Java: Source(File) -> Target(Package/Class/Constant)]
 	Import DependencyType = "IMPORT"
-	// Contain 包含成员 Source element contains Target element
+	// Contain 成员归属/逻辑层级包含, 包包含类、文件包含类、类包含方法、类包含字段
 	// e.g., [Java: Source(Class...) -> Target(Class/Interface/Enum/Method/Field...)]
 	Contain DependencyType = "CONTAIN"
 	// Parameter 函数参数

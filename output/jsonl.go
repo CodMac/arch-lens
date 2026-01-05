@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 
+	"github.com/CodMac/go-treesitter-dependency-analyzer/context"
 	"github.com/CodMac/go-treesitter-dependency-analyzer/model"
 	"github.com/CodMac/go-treesitter-dependency-analyzer/noisefilter"
 )
@@ -19,7 +20,7 @@ func NewJSONLWriter(w io.Writer) *JSONLWriter {
 
 func (w *JSONLWriter) Write(v interface{}) error { return w.encoder.Encode(v) }
 
-func ExportElements(path string, gCtx *model.GlobalContext) (int, error) {
+func ExportElements(path string, gCtx *context.GlobalContext) (int, error) {
 	f, err := os.Create(path)
 	if err != nil {
 		return 0, err
@@ -37,7 +38,7 @@ func ExportElements(path string, gCtx *model.GlobalContext) (int, error) {
 	return count, nil
 }
 
-func ExportRelations(path string, rels []*model.DependencyRelation, gCtx *model.GlobalContext, skipExternal bool, filter noisefilter.NoiseFilter) (int, error) {
+func ExportRelations(path string, rels []*model.DependencyRelation, gCtx *context.GlobalContext, skipExternal bool, filter noisefilter.NoiseFilter) (int, error) {
 	f, err := os.Create(path)
 	if err != nil {
 		return 0, err

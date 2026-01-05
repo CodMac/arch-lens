@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -9,6 +8,7 @@ import (
 	"regexp"
 	"time"
 
+	context2 "github.com/CodMac/go-treesitter-dependency-analyzer/context"
 	"github.com/CodMac/go-treesitter-dependency-analyzer/model"
 	"github.com/CodMac/go-treesitter-dependency-analyzer/noisefilter"
 	"github.com/CodMac/go-treesitter-dependency-analyzer/output"
@@ -52,7 +52,7 @@ func main() {
 	}
 
 	proc := processor.NewFileProcessor(model.Language(*lang), false, true, *jobs)
-	rels, gCtx, err := proc.ProcessFiles(context.Background(), *path, files)
+	rels, gCtx, err := proc.ProcessFiles(*path, files)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "❌ 分析失败: %v\n", err)
 		os.Exit(1)
@@ -86,7 +86,7 @@ func main() {
 	fmt.Fprintf(os.Stderr, "\n[4/4] ✨ 完成! 耗时: %v\n", time.Since(startTime).Round(time.Millisecond))
 }
 
-func exportAsJSONL(outDir string, gCtx *model.GlobalContext, rels []*model.DependencyRelation, skip bool, nf noisefilter.NoiseFilter) {
+func exportAsJSONL(outDir string, gCtx *context2.GlobalContext, rels []*model.DependencyRelation, skip bool, nf noisefilter.NoiseFilter) {
 	output.ExportElements(filepath.Join(outDir, "element.jsonl"), gCtx)
 	output.ExportRelations(filepath.Join(outDir, "relation.jsonl"), rels, gCtx, skip, nf)
 }

@@ -1,23 +1,22 @@
 package processor
 
 import (
-	"context"
 	"path/filepath"
 	"strings"
 	"sync"
 
 	"github.com/CodMac/go-treesitter-dependency-analyzer/collector"
+	"github.com/CodMac/go-treesitter-dependency-analyzer/context"
 	"github.com/CodMac/go-treesitter-dependency-analyzer/extractor"
 	"github.com/CodMac/go-treesitter-dependency-analyzer/model"
 	"github.com/CodMac/go-treesitter-dependency-analyzer/parser"
 )
 
 type FileProcessor struct {
-	Language     model.Language
-	OutputAST    bool
-	FormatAST    bool
-	Concurrency  int
-	SkipExternal bool // 是否过滤非源码定义的外部依赖
+	Language    model.Language
+	OutputAST   bool
+	FormatAST   bool
+	Concurrency int
 }
 
 func NewFileProcessor(lang model.Language, outputAST, formatAST bool, concurrency int) *FileProcessor {
@@ -32,13 +31,18 @@ func NewFileProcessor(lang model.Language, outputAST, formatAST bool, concurrenc
 	}
 }
 
-func (fp *FileProcessor) ProcessFiles(ctx context.Context, rootPath string, filePaths []string) ([]*model.DependencyRelation, *model.GlobalContext, error) {
-	globalContext := model.NewGlobalContext()
+func (fp *FileProcessor) ProcessFiles(rootPath string, filePaths []string) ([]*model.DependencyRelation, *context.GlobalContext, error) {
+	resolver, err := context.GetSymbolResolver(fp.Language)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	globalContext := context.NewGlobalContext(resolver)
 	absRoot, _ := filepath.Abs(rootPath)
 
 	// --- 阶段 1: 收集定义 (Parallel) ---
 	// 目的：把所有类、方法、文件、包节点先塞进 GlobalContext
-	err := fp.runParallel(filePaths, func(path string, p parser.Parser) error {
+	err = fp.runParallel(filePaths, func(path string, p parser.Parser) error {
 		root, source, err := p.ParseFile(path, fp.OutputAST, fp.FormatAST)
 		if err != nil {
 			return err
@@ -115,7 +119,7 @@ func (fp *FileProcessor) ProcessFiles(ctx context.Context, rootPath string, file
 }
 
 // complementHierarchy 负责构建 Package -> SubPackage -> File -> Class 的树状包含关系
-func (fp *FileProcessor) complementHierarchy(gc *model.GlobalContext) []*model.DependencyRelation {
+func (fp *FileProcessor) complementHierarchy(gc *context.GlobalContext) []*model.DependencyRelation {
 	hierarchyRels := make(map[string]*model.DependencyRelation)
 
 	gc.RLock()
@@ -126,7 +130,7 @@ func (fp *FileProcessor) complementHierarchy(gc *model.GlobalContext) []*model.D
 		if fCtx.PackageName != "" {
 			pkgFileKey := "pf:" + fCtx.PackageName + ">" + fCtx.FilePath
 			hierarchyRels[pkgFileKey] = &model.DependencyRelation{
-				Type:   "CONTAINS",
+				Type:   model.Contain,
 				Source: &model.CodeElement{Kind: model.Package, QualifiedName: fCtx.PackageName},
 				Target: &model.CodeElement{Kind: model.File, QualifiedName: fCtx.FilePath},
 			}
@@ -142,7 +146,7 @@ func (fp *FileProcessor) complementHierarchy(gc *model.GlobalContext) []*model.D
 					break // 向上层级已处理过，直接跳出
 				}
 				hierarchyRels[pkgPkgKey] = &model.DependencyRelation{
-					Type:   "CONTAINS",
+					Type:   model.Contain,
 					Source: &model.CodeElement{Kind: model.Package, QualifiedName: parentPkg},
 					Target: &model.CodeElement{Kind: model.Package, QualifiedName: subPkg},
 				}
@@ -157,7 +161,7 @@ func (fp *FileProcessor) complementHierarchy(gc *model.GlobalContext) []*model.D
 				if entry.ParentQN == "" || entry.ParentQN == fCtx.PackageName {
 					fileElemKey := "fe:" + fCtx.FilePath + ">" + entry.Element.QualifiedName
 					hierarchyRels[fileElemKey] = &model.DependencyRelation{
-						Type:   "CONTAINS",
+						Type:   model.Contain,
 						Source: &model.CodeElement{Kind: model.File, QualifiedName: fCtx.FilePath},
 						Target: entry.Element,
 					}

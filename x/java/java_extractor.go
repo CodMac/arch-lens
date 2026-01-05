@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/CodMac/go-treesitter-dependency-analyzer/context"
 	"github.com/CodMac/go-treesitter-dependency-analyzer/model"
 	"github.com/CodMac/go-treesitter-dependency-analyzer/parser"
 	sitter "github.com/tree-sitter/go-tree-sitter"
@@ -30,7 +31,7 @@ const JavaActionQuery = `
  ]
 `
 
-func (e *Extractor) Extract(filePath string, gCtx *model.GlobalContext) ([]*model.DependencyRelation, error) {
+func (e *Extractor) Extract(filePath string, gCtx *context.GlobalContext) ([]*model.DependencyRelation, error) {
 	fCtx, ok := gCtx.FileContexts[filePath]
 	if !ok {
 		return nil, fmt.Errorf("failed to get FileContext: %s", filePath)
@@ -59,7 +60,7 @@ func (e *Extractor) Extract(filePath string, gCtx *model.GlobalContext) ([]*mode
 
 // --- 基础关系提取 ---
 
-func (e *Extractor) extractFileBaseRelations(fCtx *model.FileContext, gCtx *model.GlobalContext) []*model.DependencyRelation {
+func (e *Extractor) extractFileBaseRelations(fCtx *context.FileContext, gCtx *context.GlobalContext) []*model.DependencyRelation {
 	rels := make([]*model.DependencyRelation, 0)
 
 	// 直接使用全局上下文中已有的 File 节点作为 Source
@@ -91,7 +92,7 @@ func (e *Extractor) extractFileBaseRelations(fCtx *model.FileContext, gCtx *mode
 
 // --- 结构化关系提取 ---
 
-func (e *Extractor) extractStructuralRelations(fCtx *model.FileContext, gCtx *model.GlobalContext) []*model.DependencyRelation {
+func (e *Extractor) extractStructuralRelations(fCtx *context.FileContext, gCtx *context.GlobalContext) []*model.DependencyRelation {
 	rels := make([]*model.DependencyRelation, 0)
 	for _, entries := range fCtx.DefinitionsBySN {
 		for _, entry := range entries {
@@ -124,7 +125,7 @@ func (e *Extractor) extractStructuralRelations(fCtx *model.FileContext, gCtx *mo
 	return rels
 }
 
-func (e *Extractor) collectExtraRelations(elem *model.CodeElement, fCtx *model.FileContext, gCtx *model.GlobalContext, rels *[]*model.DependencyRelation) {
+func (e *Extractor) collectExtraRelations(elem *model.CodeElement, fCtx *context.FileContext, gCtx *context.GlobalContext, rels *[]*model.DependencyRelation) {
 	if elem.Extra == nil {
 		return
 	}
@@ -181,7 +182,7 @@ func (e *Extractor) collectExtraRelations(elem *model.CodeElement, fCtx *model.F
 
 // --- Action Query 处理核心逻辑 ---
 
-func (e *Extractor) processActionQuery(fCtx *model.FileContext, gCtx *model.GlobalContext, tsLang *sitter.Language) ([]*model.DependencyRelation, error) {
+func (e *Extractor) processActionQuery(fCtx *context.FileContext, gCtx *context.GlobalContext, tsLang *sitter.Language) ([]*model.DependencyRelation, error) {
 	rels := make([]*model.DependencyRelation, 0)
 	q, err := sitter.NewQuery(tsLang, JavaActionQuery)
 	if err != nil {
@@ -270,7 +271,7 @@ func (e *Extractor) processActionQuery(fCtx *model.FileContext, gCtx *model.Glob
 
 // --- 符号解析核心核心 ---
 
-func (e *Extractor) resolveTargetElement(cleanName string, defaultKind model.ElementKind, fCtx *model.FileContext, gCtx *model.GlobalContext) *model.CodeElement {
+func (e *Extractor) resolveTargetElement(cleanName string, defaultKind model.ElementKind, fCtx *context.FileContext, gCtx *context.GlobalContext) *model.CodeElement {
 	// 1. 优先尝试从全局符号表 (gCtx) 解析（包含当前项目内已定义的类、方法、字段）
 	if entries := gCtx.ResolveSymbol(fCtx, cleanName); len(entries) > 0 {
 		found := entries[0].Element
@@ -288,7 +289,7 @@ func (e *Extractor) resolveTargetElement(cleanName string, defaultKind model.Ele
 		lastPart := parts[len(parts)-1]
 
 		// 针对枚举常量或静态内部类，检查末尾部分是否在内置表中
-		if info, ok := JavaBuiltinTable[lastPart]; ok {
+		if info, ok := BuiltinTable[lastPart]; ok {
 			if strings.Contains(info.QN, parts[len(parts)-2]) {
 				return &model.CodeElement{Kind: info.Kind, Name: lastPart, QualifiedName: info.QN}
 			}
@@ -318,7 +319,7 @@ func (e *Extractor) resolveTargetElement(cleanName string, defaultKind model.Ele
 }
 
 func (e *Extractor) resolveFromBuiltin(name string) *model.CodeElement {
-	if info, ok := JavaBuiltinTable[name]; ok {
+	if info, ok := BuiltinTable[name]; ok {
 		elem := &model.CodeElement{Kind: info.Kind, Name: name, QualifiedName: info.QN}
 		if info.Kind == model.Class || info.Kind == model.Interface || info.Kind == model.Enum || info.Kind == model.KAnnotation {
 			elem.Extra = &model.ElementExtra{ClassExtra: &model.ClassExtra{IsBuiltin: true}}
@@ -328,7 +329,7 @@ func (e *Extractor) resolveFromBuiltin(name string) *model.CodeElement {
 	return nil
 }
 
-func (e *Extractor) resolveWithPrefix(name, prefix string, kind model.ElementKind, sourceElem *model.CodeElement, fCtx *model.FileContext, gCtx *model.GlobalContext) *model.CodeElement {
+func (e *Extractor) resolveWithPrefix(name, prefix string, kind model.ElementKind, sourceElem *model.CodeElement, fCtx *context.FileContext, gCtx *context.GlobalContext) *model.CodeElement {
 	// 处理无前缀情况 (可能命中 static import)
 	if prefix == "" {
 		for _, imp := range fCtx.Imports {
@@ -400,7 +401,7 @@ func (e *Extractor) resolveWithPrefix(name, prefix string, kind model.ElementKin
 	return &model.CodeElement{Kind: kind, Name: name, QualifiedName: resolvedPrefixQN + "." + name}
 }
 
-func (e *Extractor) resolveInInheritanceChain(classQN, memberName string, kind model.ElementKind, gCtx *model.GlobalContext) *model.CodeElement {
+func (e *Extractor) resolveInInheritanceChain(classQN, memberName string, kind model.ElementKind, gCtx *context.GlobalContext) *model.CodeElement {
 	currQN, visited := classQN, make(map[string]bool)
 	for currQN != "" && !visited[currQN] {
 		visited[currQN] = true
@@ -439,7 +440,7 @@ func (e *Extractor) resolveInInheritanceChain(classQN, memberName string, kind m
 
 // --- 辅助方法 ---
 
-func (e *Extractor) determineSourceElement(n *sitter.Node, fCtx *model.FileContext, gCtx *model.GlobalContext) *model.CodeElement {
+func (e *Extractor) determineSourceElement(n *sitter.Node, fCtx *context.FileContext, gCtx *context.GlobalContext) *model.CodeElement {
 	// 从当前节点向上回溯，寻找最近的包含它的声明块 (Method 或 Field)
 	for curr := n.Parent(); curr != nil; curr = curr.Parent() {
 		kind := curr.Kind()
@@ -476,7 +477,7 @@ func (e *Extractor) determineSourceElement(n *sitter.Node, fCtx *model.FileConte
 	return nil
 }
 
-func (e *Extractor) getObjectPrefix(node *sitter.Node, parentKind string, fCtx *model.FileContext) string {
+func (e *Extractor) getObjectPrefix(node *sitter.Node, parentKind string, fCtx *context.FileContext) string {
 	parent := node.Parent()
 	for parent != nil && parent.Kind() != parentKind {
 		parent = parent.Parent()

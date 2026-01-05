@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/CodMac/go-treesitter-dependency-analyzer/context"
 	"github.com/CodMac/go-treesitter-dependency-analyzer/model"
 	"github.com/CodMac/go-treesitter-dependency-analyzer/noisefilter"
 )
@@ -27,7 +28,7 @@ func getNodeShape(kind model.ElementKind, name string) string {
 	}
 }
 
-func ExportMermaidHTML(outputPath string, gCtx *model.GlobalContext, rels []*model.DependencyRelation, skipExternal bool, filter noisefilter.NoiseFilter) error {
+func ExportMermaidHTML(outputPath string, gCtx *context.GlobalContext, rels []*model.DependencyRelation, skipExternal bool, filter noisefilter.NoiseFilter) error {
 	f, err := os.Create(outputPath)
 	if err != nil {
 		return err
@@ -61,16 +62,13 @@ func ExportMermaidHTML(outputPath string, gCtx *model.GlobalContext, rels []*mod
 			if !exists {
 				continue
 			}
-			if rel.Type == model.Parameter || rel.Type == model.Return {
-				continue
-			}
 		}
 
 		srcID, tgtID := safeID(rel.Source.QualifiedName), safeID(rel.Target.QualifiedName)
 		if srcID == tgtID {
 			continue
 		}
-		fmt.Fprintf(f, "  %s --> %s\n", srcID, tgtID)
+		fmt.Fprintf(f, "  %s -- %s --> %s\n", srcID, rel.Type, tgtID)
 	}
 
 	fmt.Fprintln(f, `</div><script>mermaid.initialize({startOnLoad:true, maxTextSize:1000000});</script></body></html>`)

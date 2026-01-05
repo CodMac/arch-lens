@@ -1,6 +1,7 @@
 package java
 
 import (
+	"github.com/CodMac/go-treesitter-dependency-analyzer/context"
 	"github.com/CodMac/go-treesitter-dependency-analyzer/model"
 	sitter "github.com/tree-sitter/go-tree-sitter"
 
@@ -8,14 +9,18 @@ import (
 )
 
 // Collector 负责遍历 Java AST 并收集所有符号定义
-type Collector struct{}
-
-func NewJavaCollector() *Collector {
-	return &Collector{}
+type Collector struct {
+	resolver *SymbolResolver
 }
 
-func (c *Collector) CollectDefinitions(rootNode *sitter.Node, filePath string, sourceBytes *[]byte) (*model.FileContext, error) {
-	fCtx := model.NewFileContext(filePath, rootNode, sourceBytes)
+func NewJavaCollector() *Collector {
+	return &Collector{
+		resolver: &SymbolResolver{},
+	}
+}
+
+func (c *Collector) CollectDefinitions(rootNode *sitter.Node, filePath string, sourceBytes *[]byte) (*context.FileContext, error) {
+	fCtx := context.NewFileContext(filePath, rootNode, sourceBytes)
 
 	// 1. 扫描顶层节点以确定 Package 和 Imports
 	c.processTopLevelDeclarations(fCtx)
@@ -29,7 +34,7 @@ func (c *Collector) CollectDefinitions(rootNode *sitter.Node, filePath string, s
 	return fCtx, nil
 }
 
-func (c *Collector) processTopLevelDeclarations(fCtx *model.FileContext) {
+func (c *Collector) processTopLevelDeclarations(fCtx *context.FileContext) {
 	for i := 0; i < int(fCtx.RootNode.ChildCount()); i++ {
 		child := fCtx.RootNode.Child(uint(i))
 		if child == nil {
@@ -51,7 +56,7 @@ func (c *Collector) processTopLevelDeclarations(fCtx *model.FileContext) {
 	}
 }
 
-func (c *Collector) handleImport(node *sitter.Node, fCtx *model.FileContext) {
+func (c *Collector) handleImport(node *sitter.Node, fCtx *context.FileContext) {
 	isStatic := false
 	var pathParts []string
 
@@ -74,7 +79,7 @@ func (c *Collector) handleImport(node *sitter.Node, fCtx *model.FileContext) {
 	fullPath := strings.Join(pathParts, ".")
 	isWildcard := strings.HasSuffix(fullPath, ".*") || pathParts[len(pathParts)-1] == "*"
 
-	entry := &model.ImportEntry{
+	entry := &context.ImportEntry{
 		RawImportPath: fullPath,
 		IsWildcard:    isWildcard,
 		Location:      c.extractLocation(node, fCtx.FilePath),
@@ -98,7 +103,7 @@ func (c *Collector) handleImport(node *sitter.Node, fCtx *model.FileContext) {
 
 // --- 核心递归逻辑 ---
 
-func (c *Collector) collectDefinitionsRecursive(node *sitter.Node, fCtx *model.FileContext, currentQNPrefix string) error {
+func (c *Collector) collectDefinitionsRecursive(node *sitter.Node, fCtx *context.FileContext, currentQNPrefix string) error {
 	if node.IsNamed() {
 		elem, kind := c.getDefinitionElement(node, fCtx.SourceBytes, fCtx.FilePath, currentQNPrefix)
 		if elem != nil {
@@ -111,7 +116,7 @@ func (c *Collector) collectDefinitionsRecursive(node *sitter.Node, fCtx *model.F
 			} else if kind == model.Method {
 				identityName = elem.Name + c.extractParameterTypesOnly(node, fCtx.SourceBytes)
 			}
-			elem.QualifiedName = model.BuildQualifiedName(parentQN, identityName)
+			elem.QualifiedName = c.resolver.BuildQualifiedName(parentQN, identityName)
 
 			// 2. 完善 MethodExtra 信息
 			if kind == model.Method && elem.Extra != nil && elem.Extra.MethodExtra != nil {
@@ -121,7 +126,7 @@ func (c *Collector) collectDefinitionsRecursive(node *sitter.Node, fCtx *model.F
 				} else {
 					paramWithNames = c.extractParameterWithNames(node, fCtx.SourceBytes)
 				}
-				elem.Extra.MethodExtra.IncludeParamNameQN = model.BuildQualifiedName(parentQN, elem.Name+paramWithNames)
+				elem.Extra.MethodExtra.IncludeParamNameQN = c.resolver.BuildQualifiedName(parentQN, elem.Name+paramWithNames)
 			}
 
 			// 3. 注册定义
@@ -160,13 +165,13 @@ func (c *Collector) collectDefinitionsRecursive(node *sitter.Node, fCtx *model.F
 
 // --- Record 特性处理插件 ---
 
-func (c *Collector) handleRecordComponentAccessor(node *sitter.Node, fieldElem *model.CodeElement, fCtx *model.FileContext, parentQN string) {
+func (c *Collector) handleRecordComponentAccessor(node *sitter.Node, fieldElem *model.CodeElement, fCtx *context.FileContext, parentQN string) {
 	// 深度克隆原始元素生成 Method 访问器 (e.g., id -> id())
 	methodElem := *fieldElem
 	newExtra := *fieldElem.Extra
 	methodElem.Extra = &newExtra
 	methodElem.Kind = model.Method
-	methodElem.QualifiedName = model.BuildQualifiedName(parentQN, fieldElem.Name+"()")
+	methodElem.QualifiedName = c.resolver.BuildQualifiedName(parentQN, fieldElem.Name+"()")
 	methodElem.Extra.MethodExtra = &model.MethodExtra{
 		ReturnType:         fieldElem.Extra.FieldExtra.Type,
 		IncludeParamNameQN: methodElem.QualifiedName,
@@ -174,7 +179,7 @@ func (c *Collector) handleRecordComponentAccessor(node *sitter.Node, fieldElem *
 	fCtx.AddDefinition(&methodElem, parentQN)
 }
 
-func (c *Collector) handleCompactConstructorImplicitParams(node *sitter.Node, ctorElem *model.CodeElement, fCtx *model.FileContext) {
+func (c *Collector) handleCompactConstructorImplicitParams(node *sitter.Node, ctorElem *model.CodeElement, fCtx *context.FileContext) {
 	// 将 Record 组件注入到紧凑构造函数的作用域
 	recordNode := c.findParentRecord(node)
 	if recordNode != nil {
@@ -184,7 +189,7 @@ func (c *Collector) handleCompactConstructorImplicitParams(node *sitter.Node, ct
 				pElem, _ := c.getDefinitionElement(paramNode, fCtx.SourceBytes, fCtx.FilePath, ctorElem.QualifiedName)
 				if pElem != nil {
 					pElem.Kind = model.Variable
-					pElem.QualifiedName = model.BuildQualifiedName(ctorElem.QualifiedName, pElem.Name)
+					pElem.QualifiedName = c.resolver.BuildQualifiedName(ctorElem.QualifiedName, pElem.Name)
 					fCtx.AddDefinition(pElem, ctorElem.QualifiedName)
 				}
 			}

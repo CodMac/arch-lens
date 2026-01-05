@@ -3,6 +3,7 @@ package collector
 import (
 	"fmt"
 
+	"github.com/CodMac/go-treesitter-dependency-analyzer/context"
 	"github.com/CodMac/go-treesitter-dependency-analyzer/model"
 	sitter "github.com/tree-sitter/go-tree-sitter"
 )
@@ -10,7 +11,7 @@ import (
 // Collector 用于收集符号定义。
 type Collector interface {
 	// CollectDefinitions 负责遍历 AST，建立并返回该文件的 FileContext。
-	CollectDefinitions(rootNode *sitter.Node, filePath string, sourceBytes *[]byte) (*model.FileContext, error)
+	CollectDefinitions(rootNode *sitter.Node, filePath string, sourceBytes *[]byte) (*context.FileContext, error)
 }
 
 // LanguageCollectorFactory 是一个工厂函数类型，用于创建特定语言的 Collector 实例。
