@@ -13,7 +13,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/CodMac/go-treesitter-dependency-analyzer/model"
-	// 导入所有语言绑定，确保 GetLanguage 可以找到
 	_ "github.com/tree-sitter/tree-sitter-go/bindings/go"
 )
 
@@ -1248,6 +1247,91 @@ func TestJavaCollector_ModernRecord(t *testing.T) {
 			}
 		}
 		assert.True(t, foundIdParam, "Record component 'id' as constructor parameter not found")
+	})
+}
+
+// Lombok
+func TestJavaCollector_LombokSupport(t *testing.T) {
+	// 初始化
+	collector := java.NewJavaCollector()
+	parser := getJavaParser(t)
+
+	// --- Case A: @Data (Getter/Setter 注入) ---
+	t.Run("Verify Lombok @Data (User.java)", func(t *testing.T) {
+		filePath := getTestFilePath(filepath.Join("com", "example", "lombok", "User.java"))
+		rootNode, sourceBytes, _ := parser.ParseFile(filePath, true, true)
+		fCtx, _ := collector.CollectDefinitions(rootNode, filePath, sourceBytes)
+
+		const classQN = "com.example.lombok.User"
+
+		// 断言：虚拟 Getter 注入
+		getNameDefs := fCtx.DefinitionsBySN["getName"]
+		require.NotEmpty(t, getNameDefs, "Should generate getName() for @Data")
+		assert.Equal(t, classQN+".getName()", getNameDefs[0].Element.QualifiedName)
+		assert.Equal(t, model.Method, getNameDefs[0].Element.Kind)
+
+		// 断言：虚拟 Setter 注入
+		setNameDefs := fCtx.DefinitionsBySN["setName"]
+		require.NotEmpty(t, setNameDefs, "Should generate setName(String) for @Data")
+		// 注意：Setter 应该带有参数类型擦除后的 QN
+		assert.Equal(t, classQN+".setName(String)", setNameDefs[0].Element.QualifiedName)
+	})
+
+	// --- Case B: @AllArgsConstructor (构造函数注入) ---
+	t.Run("Verify Lombok Constructors (Item.java)", func(t *testing.T) {
+		filePath := getTestFilePath(filepath.Join("com", "example", "lombok", "Item.java"))
+		rootNode, sourceBytes, _ := parser.ParseFile(filePath, true, true)
+		fCtx, _ := collector.CollectDefinitions(rootNode, filePath, sourceBytes)
+
+		const classQN = "com.example.lombok.Item"
+
+		// 断言：全参构造函数注入
+		// 对应 Item(String id, double price) -> QN: ...Item(String,double)
+		constructorDefs := fCtx.DefinitionsBySN["Item"]
+		foundAllArgs := false
+		for _, d := range constructorDefs {
+			if d.Element.Kind == model.Method && strings.Contains(d.Element.QualifiedName, "(String,double)") {
+				foundAllArgs = true
+				assert.Equal(t, classQN+".Item(String,double)", d.Element.QualifiedName)
+				// 标记为构造函数
+				assert.True(t, d.Element.Extra.MethodExtra.IsConstructor)
+			}
+		}
+		assert.True(t, foundAllArgs, "AllArgsConstructor not found")
+	})
+
+	// --- Case C: @Builder (内部类与流式方法注入) ---
+	t.Run("Verify Lombok @Builder (Config.java)", func(t *testing.T) {
+		filePath := getTestFilePath(filepath.Join("com", "example", "lombok", "Config.java"))
+		rootNode, sourceBytes, _ := parser.ParseFile(filePath, true, true)
+		fCtx, _ := collector.CollectDefinitions(rootNode, filePath, sourceBytes)
+
+		const classQN = "com.example.lombok.Config"
+		const builderQN = classQN + ".ConfigBuilder"
+
+		// 1. 断言：静态 builder() 方法
+		builderMethodDefs := fCtx.DefinitionsBySN["builder"]
+		require.NotEmpty(t, builderMethodDefs)
+		assert.Equal(t, classQN+".builder()", builderMethodDefs[0].Element.QualifiedName)
+
+		// 2. 断言：虚拟内部类 ConfigBuilder 存在
+		// 注意：这需要 Collector 能够识别并手动创建这个 Class 元素
+		builderClassDefs := fCtx.DefinitionsBySN["ConfigBuilder"]
+		require.NotEmpty(t, builderClassDefs)
+		assert.Equal(t, model.Class, builderClassDefs[0].Element.Kind)
+		assert.Equal(t, builderQN, builderClassDefs[0].Element.QualifiedName)
+
+		// 3. 断言：Builder 内部的流式设置方法
+		hostMethodDefs := fCtx.DefinitionsBySN["host"]
+		// 理想情况下，我们需要识别这个 host 方法属于 ConfigBuilder 而非 Config
+		foundInBuilder := false
+		for _, d := range hostMethodDefs {
+			if d.ParentQN == builderQN {
+				foundInBuilder = true
+				assert.Equal(t, builderQN+".host(String)", d.Element.QualifiedName)
+			}
+		}
+		assert.True(t, foundInBuilder, "Builder setter 'host' not found in ConfigBuilder")
 	})
 }
 

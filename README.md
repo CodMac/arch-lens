@@ -138,12 +138,21 @@ go build -o deps-analyzer main.go
 ### 2. Java 语言路标 (Java Extension)
 
 * [x] **基础定义收集**: 完成类、接口、枚举、方法、字段及其 Modifiers/Annotations 的提取。
-* [x] **复杂符号解析**: 实现基于同包查找、精确导入及 `.*` 通配符导入的符号消歧算法。
-* [x] **Java 17+ Record 支持**: 深度适配 Record 语法，自动关联隐式访问器。
-* [x] **内置符号表**: 已集成 `java.lang` 常用类及核心 API 的内置索引。
-* [ ] **链式调用类型推导**: 解决 `a.getB().getC()` 形式的调用追踪，提升 CALL 关系的解析精度。
+* [x] **符号消歧**: 实现基于同包查找、精确导入及 `.*` 通配符导入的解析算法。
+* [x] **Java 17+ Record 支持**: 深度适配 Record 语法，自动关联并生成隐式访问器（Accessor）符号。
+* [x] **内置基础符号表**: 集成 `java.lang`, `java.util`, `java.io` 等核心 API 的映射，减少断链。
+* [ ] **Lombok 虚拟符号模拟**:
+    * 识别 `@Getter`, `@Setter`, `@Data`, `@AllArgsConstructor` 等注解。
+    * 在 `GlobalContext` 中自动为对应类补全虚拟的方法定义，确保调用链不中断。
+* [ ] **链式调用类型推导 (Type Steering)**:
+    * 实现简单的流式 API 类型追踪，解决 `obj.getA().getB()` 的连续解析问题。
 * [ ] **匿名块 QN 生成**: 为 Lambda 表达式与匿名内部类分配唯一 QN，补全函数式编程依赖。
-
+* [ ] **方法重载 (Overload) 精确匹配**:
+    * 结合参数个数与参数类型 QN，实现对重载方法的精确 Resolve。
+* [ ] **三方库类路径扫描 (Classpath Scanning)**:
+    * 支持解析用户指定的 `lib/*.jar` 或 Maven 本地仓库，补全外部符号定义。
+* [ ] **Spring 框架支持 (规划中)**:
+    * 解析 `@Bean`, `@Component` 等注解构建 Bean 依赖图谱（DI Graph）。
 ### 3. 多语言横向扩展 (Language Expansion)
 
 * [ ] **🐹 Go 语言支持** (进行中):
