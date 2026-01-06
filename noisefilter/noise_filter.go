@@ -15,14 +15,14 @@ func RegisterNoiseFilter(lang model.Language, noiseFilter NoiseFilter) {
 }
 
 // GetNoiseFilter 根据语言类型获取对应的 NoiseFilter 实例。
-func GetNoiseFilter(lang model.Language) (NoiseFilter, error) {
+func GetNoiseFilter(lang model.Language) NoiseFilter {
 	noiseFilter, ok := noiseFilterMap[lang]
 	if !ok {
 		// 如果没注册，返回一个默认不进行过滤的过滤器，防止程序奔溃
-		return &DefaultNoiseFilter{}, nil
+		return &DefaultNoiseFilter{}
 	}
 
-	return noiseFilter, nil
+	return noiseFilter
 }
 
 // DefaultNoiseFilter 默认过滤器：不对任何 QN 进行噪音判定
