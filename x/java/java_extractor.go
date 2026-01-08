@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/CodMac/go-treesitter-dependency-analyzer/context"
+	"github.com/CodMac/go-treesitter-dependency-analyzer/core"
 	"github.com/CodMac/go-treesitter-dependency-analyzer/model"
 	sitter "github.com/tree-sitter/go-tree-sitter"
 )
@@ -30,13 +30,13 @@ const JavaActionQuery = `
  ]
 `
 
-func (e *Extractor) Extract(filePath string, gCtx *context.GlobalContext) ([]*model.DependencyRelation, error) {
+func (e *Extractor) Extract(filePath string, gCtx *core.GlobalContext) ([]*model.DependencyRelation, error) {
 	fCtx, ok := gCtx.FileContexts[filePath]
 	if !ok {
 		return nil, fmt.Errorf("failed to get FileContext: %s", filePath)
 	}
 
-	tsLang, err := model.GetLanguage(model.LangJava)
+	tsLang, err := core.GetLanguage(core.LangJava)
 	if err != nil {
 		return nil, err
 	}
@@ -59,7 +59,7 @@ func (e *Extractor) Extract(filePath string, gCtx *context.GlobalContext) ([]*mo
 
 // --- 基础关系提取 ---
 
-func (e *Extractor) extractFileBaseRelations(fCtx *context.FileContext, gCtx *context.GlobalContext) []*model.DependencyRelation {
+func (e *Extractor) extractFileBaseRelations(fCtx *core.FileContext, gCtx *core.GlobalContext) []*model.DependencyRelation {
 	rels := make([]*model.DependencyRelation, 0)
 
 	// 直接使用全局上下文中已有的 File 节点作为 Source
@@ -91,7 +91,7 @@ func (e *Extractor) extractFileBaseRelations(fCtx *context.FileContext, gCtx *co
 
 // --- 结构化关系提取 ---
 
-func (e *Extractor) extractStructuralRelations(fCtx *context.FileContext, gCtx *context.GlobalContext) []*model.DependencyRelation {
+func (e *Extractor) extractStructuralRelations(fCtx *core.FileContext, gCtx *core.GlobalContext) []*model.DependencyRelation {
 	rels := make([]*model.DependencyRelation, 0)
 	for _, entries := range fCtx.DefinitionsBySN {
 		for _, entry := range entries {
@@ -124,7 +124,7 @@ func (e *Extractor) extractStructuralRelations(fCtx *context.FileContext, gCtx *
 	return rels
 }
 
-func (e *Extractor) collectExtraRelations(elem *model.CodeElement, fCtx *context.FileContext, gCtx *context.GlobalContext, rels *[]*model.DependencyRelation) {
+func (e *Extractor) collectExtraRelations(elem *model.CodeElement, fCtx *core.FileContext, gCtx *core.GlobalContext, rels *[]*model.DependencyRelation) {
 	if elem.Extra == nil {
 		return
 	}
@@ -181,7 +181,7 @@ func (e *Extractor) collectExtraRelations(elem *model.CodeElement, fCtx *context
 
 // --- Action Query 处理核心逻辑 ---
 
-func (e *Extractor) processActionQuery(fCtx *context.FileContext, gCtx *context.GlobalContext, tsLang *sitter.Language) ([]*model.DependencyRelation, error) {
+func (e *Extractor) processActionQuery(fCtx *core.FileContext, gCtx *core.GlobalContext, tsLang *sitter.Language) ([]*model.DependencyRelation, error) {
 	rels := make([]*model.DependencyRelation, 0)
 	q, err := sitter.NewQuery(tsLang, JavaActionQuery)
 	if err != nil {
@@ -270,7 +270,7 @@ func (e *Extractor) processActionQuery(fCtx *context.FileContext, gCtx *context.
 
 // --- 符号解析核心核心 ---
 
-func (e *Extractor) resolveTargetElement(cleanName string, defaultKind model.ElementKind, fCtx *context.FileContext, gCtx *context.GlobalContext) *model.CodeElement {
+func (e *Extractor) resolveTargetElement(cleanName string, defaultKind model.ElementKind, fCtx *core.FileContext, gCtx *core.GlobalContext) *model.CodeElement {
 	// 1. 优先尝试从全局符号表 (gCtx) 解析（包含当前项目内已定义的类、方法、字段）
 	if entries := gCtx.ResolveSymbol(fCtx, cleanName); len(entries) > 0 {
 		found := entries[0].Element
@@ -328,7 +328,7 @@ func (e *Extractor) resolveFromBuiltin(name string) *model.CodeElement {
 	return nil
 }
 
-func (e *Extractor) resolveWithPrefix(name, prefix string, kind model.ElementKind, sourceElem *model.CodeElement, fCtx *context.FileContext, gCtx *context.GlobalContext) *model.CodeElement {
+func (e *Extractor) resolveWithPrefix(name, prefix string, kind model.ElementKind, sourceElem *model.CodeElement, fCtx *core.FileContext, gCtx *core.GlobalContext) *model.CodeElement {
 	// 处理无前缀情况 (可能命中 static import)
 	if prefix == "" {
 		for _, imp := range fCtx.Imports {
@@ -400,7 +400,7 @@ func (e *Extractor) resolveWithPrefix(name, prefix string, kind model.ElementKin
 	return &model.CodeElement{Kind: kind, Name: name, QualifiedName: resolvedPrefixQN + "." + name}
 }
 
-func (e *Extractor) resolveInInheritanceChain(classQN, memberName string, kind model.ElementKind, gCtx *context.GlobalContext) *model.CodeElement {
+func (e *Extractor) resolveInInheritanceChain(classQN, memberName string, kind model.ElementKind, gCtx *core.GlobalContext) *model.CodeElement {
 	currQN, visited := classQN, make(map[string]bool)
 	for currQN != "" && !visited[currQN] {
 		visited[currQN] = true
@@ -439,7 +439,7 @@ func (e *Extractor) resolveInInheritanceChain(classQN, memberName string, kind m
 
 // --- 辅助方法 ---
 
-func (e *Extractor) determineSourceElement(n *sitter.Node, fCtx *context.FileContext, gCtx *context.GlobalContext) *model.CodeElement {
+func (e *Extractor) determineSourceElement(n *sitter.Node, fCtx *core.FileContext, gCtx *core.GlobalContext) *model.CodeElement {
 	// 从当前节点向上回溯，寻找最近的包含它的声明块 (Method 或 Field)
 	for curr := n.Parent(); curr != nil; curr = curr.Parent() {
 		kind := curr.Kind()
@@ -476,7 +476,7 @@ func (e *Extractor) determineSourceElement(n *sitter.Node, fCtx *context.FileCon
 	return nil
 }
 
-func (e *Extractor) getObjectPrefix(node *sitter.Node, parentKind string, fCtx *context.FileContext) string {
+func (e *Extractor) getObjectPrefix(node *sitter.Node, parentKind string, fCtx *core.FileContext) string {
 	parent := node.Parent()
 	for parent != nil && parent.Kind() != parentKind {
 		parent = parent.Parent()

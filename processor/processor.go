@@ -5,21 +5,19 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/CodMac/go-treesitter-dependency-analyzer/collector"
-	"github.com/CodMac/go-treesitter-dependency-analyzer/context"
-	"github.com/CodMac/go-treesitter-dependency-analyzer/extractor"
+	"github.com/CodMac/go-treesitter-dependency-analyzer/core"
 	"github.com/CodMac/go-treesitter-dependency-analyzer/model"
 	"github.com/CodMac/go-treesitter-dependency-analyzer/parser"
 )
 
 type FileProcessor struct {
-	Language    model.Language
+	Language    core.Language
 	OutputAST   bool
 	FormatAST   bool
 	Concurrency int
 }
 
-func NewFileProcessor(lang model.Language, outputAST, formatAST bool, concurrency int) *FileProcessor {
+func NewFileProcessor(lang core.Language, outputAST, formatAST bool, concurrency int) *FileProcessor {
 	if concurrency <= 0 {
 		concurrency = 4
 	}
@@ -31,13 +29,13 @@ func NewFileProcessor(lang model.Language, outputAST, formatAST bool, concurrenc
 	}
 }
 
-func (fp *FileProcessor) ProcessFiles(rootPath string, filePaths []string) ([]*model.DependencyRelation, *context.GlobalContext, error) {
-	resolver, err := context.GetSymbolResolver(fp.Language)
+func (fp *FileProcessor) ProcessFiles(rootPath string, filePaths []string) ([]*model.DependencyRelation, *core.GlobalContext, error) {
+	resolver, err := core.GetSymbolResolver(fp.Language)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	globalContext := context.NewGlobalContext(resolver)
+	globalContext := core.NewGlobalContext(resolver)
 	absRoot, _ := filepath.Abs(rootPath)
 
 	// --- 阶段 1: 收集定义 (Parallel) ---
@@ -48,7 +46,7 @@ func (fp *FileProcessor) ProcessFiles(rootPath string, filePaths []string) ([]*m
 			return err
 		}
 
-		cot, err := collector.GetCollector(fp.Language)
+		cot, err := core.GetCollector(fp.Language)
 		if err != nil {
 			return err
 		}
@@ -82,7 +80,7 @@ func (fp *FileProcessor) ProcessFiles(rootPath string, filePaths []string) ([]*m
 
 	var mu sync.Mutex
 	err = fp.runParallel(filePaths, func(path string, p parser.Parser) error {
-		ext, err := extractor.GetExtractor(fp.Language)
+		ext, err := core.GetExtractor(fp.Language)
 		if err != nil {
 			return err
 		}
@@ -119,7 +117,7 @@ func (fp *FileProcessor) ProcessFiles(rootPath string, filePaths []string) ([]*m
 }
 
 // complementHierarchy 负责构建 Package -> SubPackage -> File -> Class 的树状包含关系
-func (fp *FileProcessor) complementHierarchy(gc *context.GlobalContext) []*model.DependencyRelation {
+func (fp *FileProcessor) complementHierarchy(gc *core.GlobalContext) []*model.DependencyRelation {
 	hierarchyRels := make(map[string]*model.DependencyRelation)
 
 	gc.RLock()

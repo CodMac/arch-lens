@@ -1,9 +1,7 @@
-package context
+package core
 
 import (
 	"fmt"
-
-	"github.com/CodMac/go-treesitter-dependency-analyzer/model"
 )
 
 // --- 语言特有的符号解析接口 ---
@@ -21,15 +19,15 @@ type SymbolResolver interface {
 	RegisterPackage(gc *GlobalContext, packageName string)
 }
 
-var symbolResolverMap = make(map[model.Language]SymbolResolver)
+var symbolResolverMap = make(map[Language]SymbolResolver)
 
 // RegisterSymbolResolver 注册一个语言与其对应的 SymbolResolver 工厂函数。
-func RegisterSymbolResolver(lang model.Language, resolver SymbolResolver) {
+func RegisterSymbolResolver(lang Language, resolver SymbolResolver) {
 	symbolResolverMap[lang] = resolver
 }
 
 // GetSymbolResolver 根据语言类型获取对应的 SymbolResolver 实例。
-func GetSymbolResolver(lang model.Language) (SymbolResolver, error) {
+func GetSymbolResolver(lang Language) (SymbolResolver, error) {
 	resolver, ok := symbolResolverMap[lang]
 	if !ok {
 		return nil, fmt.Errorf("no SymbolResolver for language: %s", lang)

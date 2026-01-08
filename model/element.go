@@ -6,25 +6,29 @@ package model
 type ElementKind string
 
 const (
-	File         ElementKind = "FILE"          // 基本结构体          -> 对应源文件
-	Package      ElementKind = "PACKAGE"       // 基本结构体          -> 对应包        -> 适用 (Go, Java, C++)
-	Module       ElementKind = "MODULE"        // 结构化代码块      	-> 对应模块       -> 适用 (Python, Rust)
-	Namespace    ElementKind = "NAMESPACE"     // 结构化代码块      	-> 对应命名空间  	-> 适用 (C++, C#)
-	Class        ElementKind = "CLASS"         // 面向对象/复合类型    -> 对应类        -> 适用(Java, C++, Python, JS)
-	Interface    ElementKind = "INTERFACE"     // 面向对象/复合类型    -> 对应接口       -> 适用(Java, Go, TS)
-	Struct       ElementKind = "STRUCT"        // 面向对象/复合类型    -> 对应结构体   	-> 适用(Go, C)
-	Enum         ElementKind = "ENUM"          // 面向对象/复合类型    -> 对应枚举       -> 适用(Java, C++, Rust)
-	EnumConstant ElementKind = "ENUM_CONSTANT" // 面向对象/复合类型    -> 对应枚举常量
-	KAnnotation  ElementKind = "ANNOTATION"    // 面向对象/复合类型    -> 对应注解
-	Trait        ElementKind = "TRAIT"         // 面向对象/复合类型    -> 对应特质       -> 适用接口 (Rust, Scala)
-	Function     ElementKind = "FUNCTION"      // 可执行体       	-> 对应独立函数  	-> 适用(C, Go, JS)
-	Method       ElementKind = "METHOD"        // 可执行体       	-> 对应类/结构体的方法
-	Macro        ElementKind = "MACRO"         // 可执行体       	-> 对应预处理器宏     -> 适用(C/C++)
-	Variable     ElementKind = "VARIABLE"      // 存储和声明          -> 对应局部/全局变量
-	Constant     ElementKind = "CONSTANT"      // 存储和声明          -> 对应常量
-	Field        ElementKind = "FIELD"         // 存储和声明          -> 对应类/结构体/枚举的成员或字段 -> 适用(Java, Go, C++)
-	Type         ElementKind = "TYPE"          // 存储和声明          -> 对应自定义类型别名或基本类型引用
-	Unknown      ElementKind = "UNKNOWN"       // 未知类型
+	File            ElementKind = "FILE"             // 基本结构体          	-> 源文件
+	Package         ElementKind = "PACKAGE"          // 基本结构体        	-> 包 (Go, Java, C++)
+	Module          ElementKind = "MODULE"           // 结构化代码块      	-> 模块 (Python, Rust)
+	Namespace       ElementKind = "NAMESPACE"        // 结构化代码块      	-> 命名空间 (C++, C#)
+	AnonymousClass  ElementKind = "ANONYMOUS_CLASS"  // 面向对象/复合类型      -> 匿名内部类 (Java)
+	Class           ElementKind = "CLASS"            // 面向对象/复合类型    	-> 类 (Java, C++, Python, JS)
+	Interface       ElementKind = "INTERFACE"        // 面向对象/复合类型    	-> 接口 (Java, Go, TS)
+	AnonymousStruct ElementKind = "ANONYMOUS_STRUCT" // 面向对象/复合类型      -> 匿名结构体 (Go)
+	Struct          ElementKind = "STRUCT"           // 面向对象/复合类型    	-> 结构体 (Go, C)
+	Enum            ElementKind = "ENUM"             // 面向对象/复合类型    	-> 枚举 (Java, C++, Rust)
+	EnumConstant    ElementKind = "ENUM_CONSTANT"    // 面向对象/复合类型    	-> 枚举常量
+	KAnnotation     ElementKind = "ANNOTATION"       // 面向对象/复合类型    	-> 注解 (Java, C++, Python, JS)
+	Trait           ElementKind = "TRAIT"            // 面向对象/复合类型    	-> 特质 (Rust, Scala)
+	Lambda          ElementKind = "LAMBDA"           // 可执行体    			-> Lambda 表达式, 匿名函数 (Go func(){})
+	ScopeBlock      ElementKind = "SCOPE_BLOCK"      // 可执行体    			-> 代码块 (用于分析局部变量作用域)
+	Function        ElementKind = "FUNCTION"         // 可执行体  	     	-> 独立函数 (C, Go, JS)
+	Method          ElementKind = "METHOD"           // 可执行体       		-> 类/结构体的方法
+	Macro           ElementKind = "MACRO"            // 可执行体       		-> 预处理器宏 (C/C++)
+	Variable        ElementKind = "VARIABLE"         // 存储和声明         	-> 局部/全局变量
+	Constant        ElementKind = "CONSTANT"         // 存储和声明         	-> 常量
+	Field           ElementKind = "FIELD"            // 存储和声明         	-> 类/结构体/枚举的成员或字段 (Java, Go, C++)
+	Type            ElementKind = "TYPE"             // 存储和声明          	-> 自定义类型别名或基本类型引用
+	Unknown         ElementKind = "UNKNOWN"          // 未知类型
 )
 
 // Location 描述了代码元素或依赖关系在源码中的位置
@@ -51,41 +55,7 @@ type CodeElement struct {
 
 // Extra CodeElement的额外信息。包含了跨语言（如Java和Go）通用的关键元数据。
 type Extra struct {
-	Modifiers   []string `json:"Modifiers,omitempty"`  // 修饰符列表 (e.g., "public", "private", "static", "final", "abstract")
-	Annotations []string `json:"Annotation,omitempty"` // 注解列表 (e.g., "@Service")
-
-	MethodExtra       *MethodExtra       `json:"MethodExtra,omitempty"` // 仅适用于 Method/Function
-	ClassExtra        *ClassExtra        `json:"ClassExtra,omitempty"`  // 仅适用于 Class/Interface/Struct/Enum
-	FieldExtra        *FieldExtra        `json:"FieldExtra,omitempty"`  // 仅适用于 Field/Constant
-	EnumConstantExtra *EnumConstantExtra `json:"EnumConstantExtra,omitempty"`
-}
-
-// MethodExtra 存储方法或函数的特有信息
-type MethodExtra struct {
-	IsConstructor      bool     `json:"IsConstructor"`         // 是否是构造函数
-	IncludeParamNameQN string   `json:"IncludeParamNameQN"`    // 包含参数名称的QN
-	ReturnType         string   `json:"ReturnType,omitempty"`  // 适用于 Method/Function, Field (Java)
-	ThrowsTypes        []string `json:"ThrowsTypes,omitempty"` // 抛出的异常类型 (Java) 或返回错误 (Go)
-	Parameters         []string `json:"Parameters,omitempty"`  // 格式化的参数列表 (e.g., ["String name", "int count"])
-}
-
-// ClassExtra 存储类、接口、结构体或枚举的特有信息
-type ClassExtra struct {
-	SuperClass            string   `json:"SuperClass,omitempty"`            // 父类/继承的类 (Java/C++)
-	ImplementedInterfaces []string `json:"ImplementedInterfaces,omitempty"` // 实现的接口 (Java) 或嵌入/组合的类型 (Go)
-	IsAbstract            bool     `json:"IsAbstract,omitempty"`            // 是否是抽象的
-	IsFinal               bool     `json:"IsFinal,omitempty"`               // 是否是 final
-	IsBuiltin             bool     `json:"IsBuiltin,omitempty"`             // 是否是 库内置的  (e.g., ["String"])
-}
-
-// FieldExtra 存储字段或常量的特有信息
-type FieldExtra struct {
-	IsConstant bool   `json:"IsConstant,omitempty"` // 是否是常量 (final in Java, const in Go)
-	IsParam    bool   `json:"IsParam,omitempty"`    // 是否是函数入参
-	Type       string `json:"Type,omitempty"`       // 适用于 Field/Variable (Go/Java)
-}
-
-// EnumConstantExtra 保存实例化时传入的原始字符串参数列表
-type EnumConstantExtra struct {
-	Arguments []string `json:"arguments"` // 例如: USER_NOT_FOUND(404, "Not Found") -> ["404", "\"Not Found\""]
+	Modifiers   []string               `json:"Modifiers,omitempty"`  // 修饰符列表 (e.g., "public", "private", "static", "final", "abstract")
+	Annotations []string               `json:"Annotation,omitempty"` // 注解列表 (e.g., "@Service")
+	Mores       map[string]interface{} `json:"Mores,omitempty"`      // Mores 存储特定语言或特定类型的额外属性 (如 Java 的 Throws, Go 的 Receiver)
 }

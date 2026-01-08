@@ -8,9 +8,8 @@ import (
 	"regexp"
 	"time"
 
-	"github.com/CodMac/go-treesitter-dependency-analyzer/context"
+	"github.com/CodMac/go-treesitter-dependency-analyzer/core"
 	"github.com/CodMac/go-treesitter-dependency-analyzer/model"
-	"github.com/CodMac/go-treesitter-dependency-analyzer/noisefilter"
 	"github.com/CodMac/go-treesitter-dependency-analyzer/output"
 	"github.com/CodMac/go-treesitter-dependency-analyzer/processor"
 	_ "github.com/CodMac/go-treesitter-dependency-analyzer/x/java" // 插件注册
@@ -45,7 +44,7 @@ func main() {
 
 	// 2. 执行核心分析过程
 	fmt.Fprintf(os.Stderr, "[2/4] ⚙️  正在并发分析代码符号与关系 (CGO_ENABLED=1)...\n")
-	proc := processor.NewFileProcessor(model.Language(cfg.Lang), false, false, cfg.Jobs)
+	proc := processor.NewFileProcessor(core.Language(cfg.Lang), false, false, cfg.Jobs)
 	rels, gCtx, err := proc.ProcessFiles(cfg.SourcePath, files)
 	if err != nil {
 		exitWithError("分析执行失败", err)
@@ -53,10 +52,13 @@ func main() {
 
 	// 3. 执行导出逻辑
 	fmt.Fprintf(os.Stderr, "[3/4] 💾 正在准备数据导出...\n")
-	nf := noisefilter.GetNoiseFilter(model.Language(cfg.Lang))
-	if err := runExport(cfg, gCtx, rels, nf); err != nil {
+	nf := core.GetNoiseFilter(core.Language(cfg.Lang))
+	ec, rc, err := runExport(cfg, gCtx, rels, nf)
+	if err != nil {
 		exitWithError("导出失败", err)
 	}
+
+	fmt.Fprintf(os.Stderr, "    ✅ 导出完成: 元素=%d, 关系=%d\n", ec, rc)
 
 	fmt.Fprintf(os.Stderr, "\n[4/4] ✨ 任务完成! 总耗时: %v\n", time.Since(startTime).Round(time.Millisecond))
 }
@@ -76,7 +78,7 @@ func parseFlags() Config {
 	return c
 }
 
-func runExport(cfg Config, gCtx *context.GlobalContext, rels []*model.DependencyRelation, nf noisefilter.NoiseFilter) error {
+func runExport(cfg Config, gCtx *core.GlobalContext, rels []*model.DependencyRelation, nf core.NoiseFilter) (int, int, error) {
 	_ = os.MkdirAll(cfg.OutDir, 0755)
 
 	format := cfg.Format
@@ -89,24 +91,14 @@ func runExport(cfg Config, gCtx *context.GlobalContext, rels []*model.Dependency
 		}
 	}
 
+	exporter := output.NewExporter(cfg.OutDir, output.OutType(cfg.Format), cfg.SkipExternal, nf)
+
 	switch format {
 	case "mermaid":
-		p := filepath.Join(cfg.OutDir, "visualization.html")
-		return output.ExportMermaidHTML(p, gCtx, rels, cfg.SkipExternal, nf)
+		return exporter.ExportMermaidHTML(gCtx, rels)
 	default:
-		return exportJSONLSet(cfg.OutDir, gCtx, rels, cfg.SkipExternal, nf)
+		return exporter.ExportJsonL(gCtx, rels)
 	}
-}
-
-func exportJSONLSet(dir string, gCtx *context.GlobalContext, rels []*model.DependencyRelation, skip bool, nf noisefilter.NoiseFilter) error {
-	elemPath := filepath.Join(dir, "element.jsonl")
-	relPath := filepath.Join(dir, "relation.jsonl")
-
-	ec, _ := output.ExportElements(elemPath, gCtx)
-	rc, _ := output.ExportRelations(relPath, rels, gCtx, skip, nf)
-
-	fmt.Fprintf(os.Stderr, "    ✅ 导出完成: 元素=%d, 关系=%d\n", ec, rc)
-	return nil
 }
 
 func scanFiles(root, filter, lang string) ([]string, error) {

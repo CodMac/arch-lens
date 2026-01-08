@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/CodMac/go-treesitter-dependency-analyzer/core"
 	"github.com/CodMac/go-treesitter-dependency-analyzer/processor"
 
 	"github.com/CodMac/go-treesitter-dependency-analyzer/model"
@@ -35,7 +36,7 @@ func TestFileProcessor_ProcessFiles(t *testing.T) {
 	os.WriteFile(fileB, []byte(codeB), 0644)
 
 	// 2. 初始化 Processor
-	fp := processor.NewFileProcessor(model.LangJava, false, false, 2)
+	fp := processor.NewFileProcessor(core.LangJava, false, false, 2)
 
 	// 3. 执行分析
 	filePaths := []string{fileA, fileB}

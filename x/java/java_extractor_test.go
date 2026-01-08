@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/CodMac/go-treesitter-dependency-analyzer/context"
+	"github.com/CodMac/go-treesitter-dependency-analyzer/core"
 	"github.com/CodMac/go-treesitter-dependency-analyzer/model"
 	"github.com/CodMac/go-treesitter-dependency-analyzer/parser"
 	"github.com/CodMac/go-treesitter-dependency-analyzer/x/java" // 触发 init() 注册
@@ -14,14 +14,14 @@ import (
 )
 
 // 辅助函数：解析并收集定义 (Phase 1)
-func runPhase1Collection(t *testing.T, files []string) *context.GlobalContext {
-	resolver, err := context.GetSymbolResolver(model.LangJava)
+func runPhase1Collection(t *testing.T, files []string) *core.GlobalContext {
+	resolver, err := core.GetSymbolResolver(core.LangJava)
 	if err != nil {
 		t.Fatalf("Failed to create resolver: %v", err)
 	}
 
-	gc := context.NewGlobalContext(resolver)
-	javaParser, err := parser.NewParser(model.LangJava)
+	gc := core.NewGlobalContext(resolver)
+	javaParser, err := parser.NewParser(core.LangJava)
 	if err != nil {
 		t.Fatalf("Failed to create parser: %v", err)
 	}

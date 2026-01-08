@@ -10,7 +10,7 @@ const (
 	// e.g., [Java: Source(File) -> Target(Package/Class/Constant)]
 	Import DependencyType = "IMPORT"
 	// Contain 成员归属/逻辑层级包含, 包包含类、文件包含类、类包含方法、类包含字段
-	// e.g., [Java: Source(Class...) -> Target(Class/Interface/Enum/Method/Field...)]
+	// e.g., [Java: Source(Class...) -> Target(Class/Interface/Enum/Method/Field/Variable...)]
 	Contain DependencyType = "CONTAIN"
 	// Parameter 函数参数
 	// e.g., [Java: Source(Method) -> Target(Type/Class)]
@@ -43,8 +43,8 @@ const (
 	// e.g., [Java: Source(Method) -> Target(Class)]
 	Create DependencyType = "CREATE"
 	// Cast 类型强转 Target type explicitly cast to Target type
-	// 关注点：有哪些类型被强行转换
-	// e.g., [Java: Source(Class) -> Target(Class)]
+	// 关注点：有哪些变量的类型被强行转换
+	// e.g., [Java: Source(Variable) -> Target(Class)]
 	Cast     DependencyType = "CAST"
 	ImplLink DependencyType = "IMPL_LINK" // ImplLink: Implementation Link (e.g., C/C++ linking prototype to implementation).
 	Mixin    DependencyType = "MIXIN"     // Mixin: Class includes/mixes in Target Module (e.g., Ruby).

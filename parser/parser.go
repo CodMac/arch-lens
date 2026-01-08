@@ -6,8 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/CodMac/go-treesitter-dependency-analyzer/model"
-
+	"github.com/CodMac/go-treesitter-dependency-analyzer/core"
 	sitter "github.com/tree-sitter/go-tree-sitter"
 	// 导入所有语言绑定，确保 GetLanguage 可以找到
 	_ "github.com/tree-sitter/tree-sitter-go/bindings/go"
@@ -22,13 +21,13 @@ type Parser interface {
 
 // TreeSitterParser Parser的具体实现
 type TreeSitterParser struct {
-	Language model.Language // 当前解析器针对的语言
+	Language core.Language // 当前解析器针对的语言
 	tsParser *sitter.Parser
 }
 
 // NewParser 创建一个新的 TreeSitterParser 实例
-func NewParser(lang model.Language) (Parser, error) {
-	tsLang, err := model.GetLanguage(lang)
+func NewParser(lang core.Language) (Parser, error) {
+	tsLang, err := core.GetLanguage(lang)
 	if err != nil {
 		return nil, err
 	}

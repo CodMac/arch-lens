@@ -1,4 +1,4 @@
-package context
+package core
 
 import (
 	"path/filepath"
@@ -11,6 +11,7 @@ import (
 type DefinitionEntry struct {
 	Element  *model.CodeElement
 	ParentQN string
+	Node     *sitter.Node // 保留 AST 节点引用用于后期元数据填充
 }
 
 type ImportEntry struct {
@@ -41,10 +42,11 @@ func NewFileContext(filePath string, rootNode *sitter.Node, sourceBytes *[]byte)
 	}
 }
 
-func (fc *FileContext) AddDefinition(elem *model.CodeElement, parentQN string) {
+func (fc *FileContext) AddDefinition(elem *model.CodeElement, parentQN string, node *sitter.Node) {
 	fc.mutex.Lock()
 	defer fc.mutex.Unlock()
-	fc.DefinitionsBySN[elem.Name] = append(fc.DefinitionsBySN[elem.Name], &DefinitionEntry{Element: elem, ParentQN: parentQN})
+
+	fc.DefinitionsBySN[elem.Name] = append(fc.DefinitionsBySN[elem.Name], &DefinitionEntry{Element: elem, ParentQN: parentQN, Node: node})
 }
 
 func (fc *FileContext) AddImport(alias string, imp *ImportEntry) {

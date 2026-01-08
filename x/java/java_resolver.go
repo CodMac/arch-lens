@@ -3,7 +3,7 @@ package java
 import (
 	"strings"
 
-	"github.com/CodMac/go-treesitter-dependency-analyzer/context"
+	"github.com/CodMac/go-treesitter-dependency-analyzer/core"
 	"github.com/CodMac/go-treesitter-dependency-analyzer/model"
 )
 
@@ -20,21 +20,21 @@ func (j *SymbolResolver) BuildQualifiedName(parentQN, name string) string {
 	return parentQN + "." + name
 }
 
-func (j *SymbolResolver) RegisterPackage(gc *context.GlobalContext, packageName string) {
+func (j *SymbolResolver) RegisterPackage(gc *core.GlobalContext, packageName string) {
 	parts := strings.Split(packageName, ".")
 	var current []string
 	for _, part := range parts {
 		current = append(current, part)
 		pkgQN := strings.Join(current, ".")
 		if _, ok := gc.DefinitionsByQN[pkgQN]; !ok {
-			gc.DefinitionsByQN[pkgQN] = []*context.DefinitionEntry{{
+			gc.DefinitionsByQN[pkgQN] = []*core.DefinitionEntry{{
 				Element: &model.CodeElement{Kind: model.Package, Name: part, QualifiedName: pkgQN},
 			}}
 		}
 	}
 }
 
-func (j *SymbolResolver) Resolve(gc *context.GlobalContext, fc *context.FileContext, symbol string) []*context.DefinitionEntry {
+func (j *SymbolResolver) Resolve(gc *core.GlobalContext, fc *core.FileContext, symbol string) []*core.DefinitionEntry {
 	gc.RLock()
 	defer gc.RUnlock()
 

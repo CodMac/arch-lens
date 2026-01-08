@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/CodMac/go-treesitter-dependency-analyzer/context"
+	"github.com/CodMac/go-treesitter-dependency-analyzer/core"
 	"github.com/CodMac/go-treesitter-dependency-analyzer/parser"
 	"github.com/CodMac/go-treesitter-dependency-analyzer/x/java"
 	"github.com/stretchr/testify/assert"
@@ -23,7 +23,7 @@ func getTestFilePath(name string) string {
 
 // 将返回值类型改为接口 parser.Parser
 func getJavaParser(t *testing.T) parser.Parser {
-	javaParser, err := parser.NewParser(model.LangJava)
+	javaParser, err := parser.NewParser(core.LangJava)
 	if err != nil {
 		t.Fatalf("Failed to create Java parser: %v", err)
 	}
@@ -33,7 +33,7 @@ func getJavaParser(t *testing.T) parser.Parser {
 
 const printEle = true
 
-func printCodeElements(fCtx *context.FileContext) {
+func printCodeElements(fCtx *core.FileContext) {
 	if !printEle {
 		return
 	}
