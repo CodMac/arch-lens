@@ -103,10 +103,17 @@ func (c *Collector) identifyElement(node *sitter.Node, fCtx *core.FileContext, p
 		kind = model.Enum
 	case "method_declaration", "constructor_declaration":
 		kind = model.Method
-	case "field_declaration":
-		kind = model.Field
-	case "variable_declarator":
-		kind = model.Variable
+	case "field_declaration", "local_variable_declaration": // 新增：支持方法内部变量定义
+		kind = model.Field // 默认为 Field，如果是局部变量稍后在 enrich 修改为 Variable
+		if kindStr == "local_variable_declaration" {
+			kind = model.Variable
+		}
+		// 尝试从 variable_declarator 获取名字
+		if vd := c.findNamedChildOfType(node, "variable_declarator"); vd != nil {
+			if nNode := vd.ChildByFieldName("name"); nNode != nil {
+				name = c.getNodeContent(nNode, *fCtx.SourceBytes)
+			}
+		}
 	case "formal_parameter":
 		kind = model.Variable
 	case "lambda_expression":
@@ -115,14 +122,23 @@ func (c *Collector) identifyElement(node *sitter.Node, fCtx *core.FileContext, p
 	case "block":
 		kind = model.ScopeBlock
 		name = "block"
+	case "object_creation_expression":
+		// 识别匿名类
+		if c.findNamedChildOfType(node, "class_body") != nil {
+			kind = model.AnonymousClass
+			name = "anonymousClass"
+		} else {
+			return nil, ""
+		}
 	default:
 		return nil, ""
 	}
 
+	// ... 保持原有的 name 空值处理 ...
 	if name == "" {
 		if nNode := node.ChildByFieldName("name"); nNode != nil {
 			name = c.getNodeContent(nNode, *fCtx.SourceBytes)
-		} else if kind == model.Method { // 构造函数
+		} else if kind == model.Method {
 			parts := strings.Split(parentQN, ".")
 			name = parts[len(parts)-1]
 		}
@@ -149,7 +165,8 @@ func (c *Collector) applyUniqueQN(elem *model.CodeElement, node *sitter.Node, pa
 	occurrences[identity]++
 	count := occurrences[identity]
 
-	if count > 1 || elem.Kind == model.Lambda || elem.Kind == model.ScopeBlock {
+	// 针对匿名类、Lambda 和代码块，使用 $数字 格式
+	if elem.Kind == model.AnonymousClass || elem.Kind == model.Lambda || elem.Kind == model.ScopeBlock || count > 1 {
 		identity = fmt.Sprintf("%s$%d", identity, count)
 	}
 
@@ -164,82 +181,120 @@ func (c *Collector) enrichMetadata(fCtx *core.FileContext) {
 			node := entry.Node
 			elem := entry.Element
 
-			// 1. 提取修饰符和注解
 			mods, annos := c.extractModifiersAndAnnotations(node, *fCtx.SourceBytes)
-
-			// 2. 提取注释 (Doc/Comment)
 			elem.Doc, elem.Comment = c.extractComments(node, fCtx.SourceBytes)
 
-			// 3. 填充 Extra.Mores
 			extra := &model.Extra{
 				Modifiers:   mods,
 				Annotations: annos,
 				Mores:       make(map[string]interface{}),
 			}
 
+			isStatic := c.contains(mods, "static")
+			isFinal := c.contains(mods, "final")
+
 			switch elem.Kind {
 			case model.Method:
-				extra.Mores[MethodIsConstructor] = node.Kind() == "constructor_declaration"
+				extra.Mores[MethodIsConstructor] = (node.Kind() == "constructor_declaration")
+
+				// 1. 返回类型
 				retType := ""
 				if tNode := node.ChildByFieldName("type"); tNode != nil {
 					retType = c.getNodeContent(tNode, *fCtx.SourceBytes)
 					extra.Mores[MethodReturnType] = retType
 				}
-				params := c.extractParameterWithNames(node, fCtx.SourceBytes)
-				extra.Mores[MethodFullSignatureQN] = elem.Name + params
-				elem.Signature = fmt.Sprintf("%s %s%s", retType, elem.Name, params)
 
-			case model.Class:
+				// 2. 参数列表提取 (MethodParameters)
+				paramList := c.extractParameterList(node, fCtx.SourceBytes)
+				if len(paramList) > 0 {
+					extra.Mores[MethodParameters] = paramList // [String batchId, int limit]
+				}
+
+				// 3. 异常抛出提取 (MethodThrowsTypes)
+				throws := c.extractThrows(node, fCtx.SourceBytes)
+				if len(throws) > 0 {
+					extra.Mores[MethodThrowsTypes] = throws
+				}
+
+				// 签名构建
+				paramsRaw := c.extractParameterWithNames(node, fCtx.SourceBytes)
+				extra.Mores[MethodFullSignatureQN] = elem.Name + paramsRaw
+				elem.Signature = strings.TrimSpace(fmt.Sprintf("%s %s %s%s", strings.Join(mods, " "), retType, elem.Name, paramsRaw))
+
+			case model.Class, model.Interface:
 				extra.Mores[ClassIsAbstract] = c.contains(mods, "abstract")
-				extra.Mores[ClassIsFinal] = c.contains(mods, "final")
-				elem.Signature = strings.Join(mods, " ") + " class " + elem.Name
-			case model.Interface:
-				elem.Signature = strings.Join(mods, " ") + " interface " + elem.Name
-			case model.Enum:
-				elem.Signature = strings.Join(mods, " ") + " interface " + elem.Name
-			case model.Field, model.Variable:
+				extra.Mores[ClassIsFinal] = isFinal
+
+				// 4. 父类与接口提取 (SuperClass / ImplementedInterfaces)
+				heritageSign := "" // 用于构建签名的后缀
+				if super := node.ChildByFieldName("superclass"); super != nil {
+					content := c.getNodeContent(super, *fCtx.SourceBytes)
+					extra.Mores[ClassSuperClass] = strings.TrimPrefix(content, "extends ")
+					heritageSign += " " + content // 保留 extends 关键字用于签名
+				}
+
+				interfaces := c.extractInterfaces(node, fCtx.SourceBytes)
+				if len(interfaces) > 0 {
+					if elem.Kind == model.Class {
+						extra.Mores[ClassImplementedInterfaces] = interfaces
+					} else {
+						extra.Mores[InterfaceImplementedInterfaces] = interfaces
+					}
+
+					// 获取接口节点的原始文本（包含 implements 或 extends 关键字）
+					if iNode := node.ChildByFieldName("interfaces"); iNode != nil {
+						heritageSign += " " + c.getNodeContent(iNode, *fCtx.SourceBytes)
+					}
+				}
+
+				// 签名构建 (含泛型和继承/实现关系)
+				typeParams := ""
+				if tpNode := node.ChildByFieldName("type_parameters"); tpNode != nil {
+					typeParams = c.getNodeContent(tpNode, *fCtx.SourceBytes)
+				}
+
+				displayKind := strings.Replace(node.Kind(), "_declaration", "", 1)
+				// 修正点：将 heritageSign 加入 Signature
+				elem.Signature = strings.TrimSpace(fmt.Sprintf("%s %s %s%s%s", strings.Join(mods, " "), displayKind, elem.Name, typeParams, heritageSign))
+
+			case model.Field:
+				// 5. 字段特性 (Static, Final, Constant)
+				extra.Mores[FieldIsStatic] = isStatic
+				extra.Mores[FieldIsFinal] = isFinal
+				extra.Mores[FieldIsConstant] = isStatic && isFinal
+				extra.Mores[FieldIsParam] = false // 字段不是参数
+
 				fType := ""
 				if tNode := node.ChildByFieldName("type"); tNode != nil {
 					fType = c.getNodeContent(tNode, *fCtx.SourceBytes)
 					extra.Mores[FieldType] = fType
 				}
-				elem.Signature = fType + " " + elem.Name
+				elem.Signature = strings.TrimSpace(fmt.Sprintf("%s %s %s", strings.Join(mods, " "), fType, elem.Name))
+
+			case model.Variable:
+				// 6. 变量特性 (IsParam, Type)
+				extra.Mores[VariableIsFinal] = isFinal
+				extra.Mores[VariableIsParam] = (node.Kind() == "formal_parameter")
+
+				vType := ""
+				if tNode := node.ChildByFieldName("type"); tNode != nil {
+					vType = c.getNodeContent(tNode, *fCtx.SourceBytes)
+					extra.Mores[VariableType] = vType
+				}
+				elem.Signature = strings.TrimSpace(fmt.Sprintf("%s %s %s", strings.Join(mods, " "), vType, elem.Name))
+
+			case model.EnumConstant:
+				// 7. 枚举参数提取 (EnumArguments)
+				if argsNode := node.ChildByFieldName("arguments"); argsNode != nil {
+					extra.Mores[EnumArguments] = c.getNodeContent(argsNode, *fCtx.SourceBytes)
+				}
 			}
 			elem.Extra = extra
 		}
 	}
 }
 
-// --- 辅助工具函数 ---
-
-func (c *Collector) extractComments(node *sitter.Node, src *[]byte) (doc string, comment string) {
-	curr := node
-	// 如果是 variable_declarator，注释通常在父节点 field_declaration 上
-	if node.Kind() == "variable_declarator" && node.Parent() != nil {
-		curr = node.Parent()
-	}
-
-	// 尝试寻找紧邻的前一个兄弟节点是否是注释
-	prev := curr.PrevSibling()
-	for prev != nil {
-		if prev.Kind() == "block_comment" || prev.Kind() == "line_comment" {
-			text := c.getNodeContent(prev, *src)
-			if strings.HasPrefix(text, "/**") {
-				doc = text
-			} else {
-				comment = text
-			}
-			// 只取最近的一个
-			break
-		}
-		// 如果中间隔了非空白字符，就停止
-		if strings.TrimSpace(c.getNodeContent(prev, *src)) != "" {
-			break
-		}
-		prev = prev.PrevSibling()
-	}
-	return
-}
+// --- 提取相关函数 ---
 
 func (c *Collector) handleImport(node *sitter.Node, fCtx *core.FileContext) {
 	isStatic := false
@@ -284,6 +339,35 @@ func (c *Collector) handleImport(node *sitter.Node, fCtx *core.FileContext) {
 	}
 	entry.Alias = alias
 	fCtx.AddImport(alias, entry)
+}
+
+func (c *Collector) extractComments(node *sitter.Node, src *[]byte) (doc string, comment string) {
+	curr := node
+	// 如果是 variable_declarator，注释通常在父节点 field_declaration 上
+	if node.Kind() == "variable_declarator" && node.Parent() != nil {
+		curr = node.Parent()
+	}
+
+	// 尝试寻找紧邻的前一个兄弟节点是否是注释
+	prev := curr.PrevSibling()
+	for prev != nil {
+		if prev.Kind() == "block_comment" || prev.Kind() == "line_comment" {
+			text := c.getNodeContent(prev, *src)
+			if strings.HasPrefix(text, "/**") {
+				doc = text
+			} else {
+				comment = text
+			}
+			// 只取最近的一个
+			break
+		}
+		// 如果中间隔了非空白字符，就停止
+		if strings.TrimSpace(c.getNodeContent(prev, *src)) != "" {
+			break
+		}
+		prev = prev.PrevSibling()
+	}
+	return
 }
 
 func (c *Collector) extractParameterTypesOnly(node *sitter.Node, src *[]byte) string {
@@ -334,11 +418,52 @@ func (c *Collector) extractModifiersAndAnnotations(n *sitter.Node, src []byte) (
 	return mods, annos
 }
 
-func (c *Collector) getNodeContent(n *sitter.Node, src []byte) string {
-	if n == nil {
-		return ""
+// extractParameterList 提取 [Type name, Type name] 格式
+func (c *Collector) extractParameterList(node *sitter.Node, src *[]byte) []string {
+	pNode := node.ChildByFieldName("parameters")
+	if pNode == nil {
+		return nil
 	}
-	return n.Utf8Text(src)
+	var params []string
+	for i := 0; i < int(pNode.NamedChildCount()); i++ {
+		param := pNode.NamedChild(uint(i))
+		params = append(params, c.getNodeContent(param, *src))
+	}
+	return params
+}
+
+// extractThrows 提取 throws 列表
+func (c *Collector) extractThrows(node *sitter.Node, src *[]byte) []string {
+	tNode := node.ChildByFieldName("throws")
+	if tNode == nil {
+		return nil
+	}
+	// tNode 是 (throws (type_identifier) (type_identifier)) 结构
+	var types []string
+	for i := 0; i < int(tNode.NamedChildCount()); i++ {
+		types = append(types, c.getNodeContent(tNode.NamedChild(uint(i)), *src))
+	}
+	return types
+}
+
+// extractInterfaces 提取 implements 列表
+func (c *Collector) extractInterfaces(node *sitter.Node, src *[]byte) []string {
+	iNode := node.ChildByFieldName("interfaces")
+	if iNode == nil {
+		return nil
+	}
+	// iNode 是 (interfaces (type_list (type_identifier)))
+	var interfaces []string
+	// 深入寻找 type_list
+	listNode := iNode
+	if iNode.NamedChildCount() > 0 && iNode.NamedChild(0).Kind() == "type_list" {
+		listNode = iNode.NamedChild(0)
+	}
+
+	for i := 0; i < int(listNode.NamedChildCount()); i++ {
+		interfaces = append(interfaces, c.getNodeContent(listNode.NamedChild(uint(i)), *src))
+	}
+	return interfaces
 }
 
 func (c *Collector) extractLocation(n *sitter.Node, filePath string) *model.Location {
@@ -349,6 +474,15 @@ func (c *Collector) extractLocation(n *sitter.Node, filePath string) *model.Loca
 		StartColumn: int(n.StartPosition().Column),
 		EndColumn:   int(n.EndPosition().Column),
 	}
+}
+
+// --- 辅助工具函数 ---
+
+func (c *Collector) getNodeContent(n *sitter.Node, src []byte) string {
+	if n == nil {
+		return ""
+	}
+	return n.Utf8Text(src)
 }
 
 func (c *Collector) findNamedChildOfType(n *sitter.Node, nodeType string) *sitter.Node {
@@ -363,7 +497,8 @@ func (c *Collector) findNamedChildOfType(n *sitter.Node, nodeType string) *sitte
 
 func (c *Collector) isScopeContainer(k model.ElementKind) bool {
 	return k == model.Class || k == model.Interface || k == model.Enum ||
-		k == model.Method || k == model.Lambda || k == model.ScopeBlock
+		k == model.Method || k == model.Lambda || k == model.ScopeBlock ||
+		k == model.AnonymousClass // 必须包含这个
 }
 
 func (c *Collector) contains(slice []string, item string) bool {

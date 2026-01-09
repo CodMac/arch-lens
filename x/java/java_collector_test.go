@@ -98,7 +98,7 @@ func TestJavaCollector_AbstractBaseEntity(t *testing.T) {
 			t.Errorf("Expected Kind CLASS, got %s", elem.Kind)
 		}
 
-		if isAbs, ok := elem.Extra.Mores[java.KeyIsAbstract].(bool); !ok || !isAbs {
+		if isAbs, ok := elem.Extra.Mores[java.ClassIsAbstract].(bool); !ok || !isAbs {
 			t.Error("Expected java.class.is_abstract to be true")
 		}
 
@@ -106,10 +106,6 @@ func TestJavaCollector_AbstractBaseEntity(t *testing.T) {
 		expectedSign := "public abstract class AbstractBaseEntity<ID> implements Serializable"
 		if expectedSign != elem.Signature {
 			t.Errorf("Signature mismatch. Got: %q, Expected: %s", elem.Signature, expectedSign)
-		}
-
-		if !strings.Contains(elem.Signature, "AbstractBaseEntity") || !strings.Contains(elem.Signature, "abstract") {
-
 		}
 	})
 
@@ -126,7 +122,7 @@ func TestJavaCollector_AbstractBaseEntity(t *testing.T) {
 			t.Errorf("Expected Field, got %s", elem.Kind)
 		}
 
-		if tpe := elem.Extra.Mores[java.KeyType]; tpe != "ID" {
+		if tpe := elem.Extra.Mores[java.FieldType]; tpe != "ID" {
 			t.Errorf("Expected type ID, got %v", tpe)
 		}
 
@@ -144,7 +140,7 @@ func TestJavaCollector_AbstractBaseEntity(t *testing.T) {
 		}
 
 		elem := defs[0].Element
-		if tpe := elem.Extra.Mores[java.KeyType]; tpe != "Date" {
+		if tpe := elem.Extra.Mores[java.FieldType]; tpe != "Date" {
 			t.Errorf("Expected type Date, got %v", tpe)
 		}
 
@@ -163,7 +159,7 @@ func TestJavaCollector_AbstractBaseEntity(t *testing.T) {
 		}
 
 		getElem := getDefs[0].Element
-		if ret := getElem.Extra.Mores[java.KeyReturnType]; ret != "ID" {
+		if ret := getElem.Extra.Mores[java.MethodReturnType]; ret != "ID" {
 			t.Errorf("getId expected return ID, got %v", ret)
 		}
 
@@ -175,7 +171,7 @@ func TestJavaCollector_AbstractBaseEntity(t *testing.T) {
 		}
 
 		setElem := setDefs[0].Element
-		if ret := setElem.Extra.Mores[java.KeyReturnType]; ret != "void" {
+		if ret := setElem.Extra.Mores[java.MethodReturnType]; ret != "void" {
 			t.Errorf("setId expected return void, got %v", ret)
 		}
 	})
@@ -201,8 +197,183 @@ func TestJavaCollector_AbstractBaseEntity(t *testing.T) {
 		}
 
 		fieldElem := fieldDefs[0].Element
-		if tpe := fieldElem.Extra.Mores[java.KeyType]; tpe != "String" {
+		if tpe := fieldElem.Extra.Mores[java.FieldType]; tpe != "String" {
 			t.Errorf("tableName expected String, got %v", tpe)
+		}
+	})
+}
+
+func TestJavaCollector_BaseClassHierarchy(t *testing.T) {
+	// 1. 获取测试文件路径
+	filePath := getTestFilePath(filepath.Join("com", "example", "base", "BaseClass.java"))
+
+	// 2. 解析与收集
+	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, true, true)
+	if err != nil {
+		t.Fatalf("Failed to parse file: %v", err)
+	}
+
+	collector := java.NewJavaCollector()
+	fCtx, err := collector.CollectDefinitions(rootNode, filePath, sourceBytes)
+	if err != nil {
+		t.Fatalf("CollectDefinitions failed: %v", err)
+	}
+
+	printCodeElements(fCtx)
+
+	// 断言 1 & 2: 验证 BaseClass (Abstract, Annotations, Interfaces)
+	t.Run("Verify BaseClass Metadata", func(t *testing.T) {
+		qn := "com.example.base.BaseClass"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("BaseClass not found")
+		}
+		elem := defs[0].Element
+
+		// 断言 1: 注解验证
+		expectedAnnos := []string{"@Deprecated", "@SuppressWarnings(\"unused\")"}
+		for _, anno := range expectedAnnos {
+			if !contains(elem.Extra.Annotations, anno) {
+				t.Errorf("BaseClass missing annotation: %s", anno)
+			}
+		}
+
+		// 断言 2: Abstract 属性与接口
+		if isAbs, ok := elem.Extra.Mores[java.ClassIsAbstract].(bool); !ok || !isAbs {
+			t.Error("Expected java.class.is_abstract to be true")
+		}
+
+		interfaces, ok := elem.Extra.Mores[java.ClassImplementedInterfaces].([]string)
+		if !ok || !contains(interfaces, "Serializable") {
+			t.Errorf("Expected Serializable interface, got %v", elem.Extra.Mores[java.ClassImplementedInterfaces])
+		}
+	})
+
+	// 断言 3 & 4: 验证 FinalClass (Final, SuperClass, Multiple Interfaces, Location)
+	t.Run("Verify FinalClass Metadata", func(t *testing.T) {
+		qn := "com.example.base.FinalClass"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("FinalClass not found")
+		}
+		elem := defs[0].Element
+
+		// 断言 4: Kind 验证
+		if elem.Kind != model.Class {
+			t.Errorf("Expected Kind CLASS, got %s", elem.Kind)
+		}
+
+		// 断言 4: 位置信息验证 (FinalClass 在 BaseClass 之后，大致在第 11 行左右)
+		if elem.Location.StartLine < 5 {
+			t.Errorf("FinalClass StartLine seems incorrect: %d", elem.Location.StartLine)
+		}
+
+		// 断言 3: Final 属性
+		if isFinal, ok := elem.Extra.Mores[java.ClassIsFinal].(bool); !ok || !isFinal {
+			t.Error("Expected java.class.is_final to be true")
+		}
+
+		// 断言 3: 父类验证
+		super, _ := elem.Extra.Mores[java.ClassSuperClass].(string)
+		if !strings.Contains(super, "BaseClass") {
+			t.Errorf("Expected super class BaseClass, got %q", super)
+		}
+
+		// 断言 3: 多接口验证
+		interfaces, _ := elem.Extra.Mores[java.ClassImplementedInterfaces].([]string)
+		if len(interfaces) < 2 || !contains(interfaces, "Cloneable") || !contains(interfaces, "Runnable") {
+			t.Errorf("Expected multiple interfaces (Cloneable, Runnable), got %v", interfaces)
+		}
+	})
+
+	// 断言 5: 验证 FinalClass.run() 函数的注解
+	t.Run("Verify FinalClass.run() Annotations", func(t *testing.T) {
+		qn := "com.example.base.FinalClass.run()"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("Method run() not found")
+		}
+		elem := defs[0].Element
+
+		if !contains(elem.Extra.Annotations, "@Override") {
+			t.Error("Method run() missing @Override annotation")
+		}
+	})
+}
+
+func TestJavaCollector_CallbackManager(t *testing.T) {
+	// 1. 获取测试文件路径
+	filePath := getTestFilePath(filepath.Join("com", "example", "base", "CallbackManager.java"))
+
+	// 2. 解析源码与运行 Collector
+	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, true, true)
+	if err != nil {
+		t.Fatalf("Failed to parse file: %v", err)
+	}
+
+	collector := java.NewJavaCollector()
+	fCtx, err := collector.CollectDefinitions(rootNode, filePath, sourceBytes)
+	if err != nil {
+		t.Fatalf("CollectDefinitions failed: %v", err)
+	}
+
+	printCodeElements(fCtx)
+
+	// 验证 1: 验证方法内部定义的局部类 LocalValidator
+	t.Run("Verify Local Class", func(t *testing.T) {
+		// 根据你的 Collector 实现，局部类应该在方法 QN 下
+		qn := "com.example.base.CallbackManager.register().block$1.LocalValidator"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("Local class LocalValidator not found at %s", qn)
+		}
+
+		elem := defs[0].Element
+		if elem.Kind != model.Class {
+			t.Errorf("Expected Kind CLASS, got %s", elem.Kind)
+		}
+
+		// 验证局部类内部的方法
+		methodQN := qn + ".isValid()"
+		methodDefs := findDefinitionsByQN(fCtx, methodQN)
+		if len(methodDefs) == 0 {
+			t.Errorf("Method isValid() not found in local class")
+		}
+		if methodDefs[0].Element.Extra.Mores[java.MethodParameters] != nil {
+			t.Errorf("Method isValid() found params")
+		}
+	})
+
+	// 验证 2: 验证变量 r
+	t.Run("Verify Variable r", func(t *testing.T) {
+		// 修正路径：register() 后面跟着 block$1
+		qn := "com.example.base.CallbackManager.register().block$1.r"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("Variable r not found at %s", qn)
+		}
+
+		elem := defs[0].Element
+		if tpe := elem.Extra.Mores[java.VariableType]; tpe != "Runnable" {
+			t.Errorf("Expected type Runnable, got %v", tpe)
+		}
+	})
+
+	// 验证 3: 验证匿名内部类及其方法 run()
+	t.Run("Verify Anonymous Inner Class and Run Method", func(t *testing.T) {
+		// 修正路径：anonymousClass$1 现在应该正确嵌套了 run()
+		anonQN := "com.example.base.CallbackManager.register().block$1.anonymousClass$1"
+		runQN := anonQN + ".run()"
+
+		runDefs := findDefinitionsByQN(fCtx, runQN)
+		if len(runDefs) == 0 {
+			// 如果还是找不到，说明 run 直接挂在了 block$1 下，那是因为匿名类节点没能成功拦截其子节点
+			t.Fatalf("Method run() not found at expected QN: %s", runQN)
+		}
+
+		elem := runDefs[0].Element
+		if !contains(elem.Extra.Annotations, "@Override") {
+			t.Error("Method run() missing @Override")
 		}
 	})
 }
