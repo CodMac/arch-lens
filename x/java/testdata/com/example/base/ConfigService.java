@@ -1,4 +1,4 @@
-package com.example.config;
+package com.example.base;
 
 public class ConfigService {
     // 边界：变长参数 ... 和 多维数组 []

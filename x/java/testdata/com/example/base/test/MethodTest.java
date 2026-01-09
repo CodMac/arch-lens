@@ -1,4 +1,4 @@
-package com.example.member;
+package com.example.base;
 
 // 目标：验证 QN 的唯一性（通过参数类型区分）、构造函数识别、返回值提取。
 public class MethodTest {

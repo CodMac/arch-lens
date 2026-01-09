@@ -1,6 +1,6 @@
-package com.example.scope;
+package com.example.base.test;
 
-public class ParameterScopeTester {
+public class ParameterScopeTest {
     // 构造函数
     public ParameterScopeTester(String initialConfig) {
     }

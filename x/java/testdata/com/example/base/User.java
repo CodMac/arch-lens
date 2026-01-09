@@ -1,4 +1,4 @@
-package com.example.model;
+package com.example.base;
 
 import static java.util.concurrent.TimeUnit.DAYS;
 import static java.util.concurrent.TimeUnit.HOURS;

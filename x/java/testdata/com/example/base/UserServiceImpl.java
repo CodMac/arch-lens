@@ -1,8 +1,6 @@
-package com.example.service;
+package com.example.base;
 
-import com.example.model.AbstractBaseEntity;
-import com.example.core.DataProcessor;
-import com.example.annotation.Loggable;
+import com.example.base.annotation.Loggable;
 
 import java.util.ArrayList;
 import java.util.List;

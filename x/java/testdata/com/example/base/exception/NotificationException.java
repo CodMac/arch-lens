@@ -1,4 +1,6 @@
-package com.example.model;
+package com.example.base.exception;
+
+import com.example.base.enum.ErrorCode;
 
 /**
  * NotificationException - 自定义异常，用于测试 EXTEND 和 THROW 关系。

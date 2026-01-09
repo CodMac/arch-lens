@@ -1,4 +1,4 @@
-package com.example.clazz;
+package com.example.base.test;
 
 // 目标：验证 AnonymousClass 和嵌套结构。
 public class AnonymousClassTest {

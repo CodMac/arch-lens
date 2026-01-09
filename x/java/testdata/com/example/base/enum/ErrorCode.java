@@ -1,4 +1,4 @@
-package com.example.model;
+package com.example.base.enum;
 
 /**
  * ErrorCode - 用于测试 ENUM 定义和使用。

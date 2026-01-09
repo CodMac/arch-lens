@@ -1,4 +1,4 @@
-package com.example.logic;
+package com.example.base;
 
 // 目标：验证 ScopeBlock 内的变量计数（$1, $2）以及 Lambda。
 public class ScopeTest {

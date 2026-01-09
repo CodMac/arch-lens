@@ -1,4 +1,4 @@
-package com.example.annotation;
+package com.example.base.annotation;
 
 import java.lang.annotation.*;
 

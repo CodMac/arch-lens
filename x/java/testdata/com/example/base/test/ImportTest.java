@@ -1,4 +1,4 @@
-package com.example.pkg;
+package com.example.base.test;
 
 import java.util.List;           // Class 导入
 import java.util.*;              // Wildcard 导入

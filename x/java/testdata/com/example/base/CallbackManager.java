@@ -1,4 +1,4 @@
-package com.example.service;
+package com.example.base;
 
 public class CallbackManager {
     public void register() {

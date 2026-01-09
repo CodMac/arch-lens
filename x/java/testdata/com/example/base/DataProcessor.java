@@ -1,4 +1,4 @@
-package com.example.core;
+package com.example.base;
 
 import com.example.model.AbstractBaseEntity;
 

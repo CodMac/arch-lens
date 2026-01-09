@@ -1,4 +1,4 @@
-package com.example.clazz;
+package com.example.base;
 
 import java.io.Serializable;
 
