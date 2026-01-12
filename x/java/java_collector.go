@@ -22,20 +22,20 @@ func NewJavaCollector() *Collector {
 }
 
 // ==========================================
-// 核心流程 (Core Workflow)
+// 1. 核心生命周期 (Core Workflow)
 // ==========================================
 
 func (c *Collector) CollectDefinitions(rootNode *sitter.Node, filePath string, sourceBytes *[]byte) (*core.FileContext, error) {
 	fCtx := core.NewFileContext(filePath, rootNode, sourceBytes)
 
-	// 1. 处理包声明和导入声明 (Top-level)
+	// 第一步：提取包名与导入 (Top-level)
 	c.processTopLevelDeclarations(fCtx)
 
-	// 2. 递归收集基础定义 (Kind, Name, QN, Location)
+	// 第二步：深度优先遍历构建符号索引 (QN/Kind/Location)
 	nameOccurrence := make(map[string]int)
 	c.collectBasicDefinitions(fCtx.RootNode, fCtx, fCtx.PackageName, nameOccurrence)
 
-	// 3. 二次遍历填充元数据 (Signature, Modifiers, Annotations, Mores)
+	// 第三步：二次遍历完善详细元数据 (Signature/Extra)
 	c.enrichMetadata(fCtx)
 
 	return fCtx, nil
@@ -63,11 +63,10 @@ func (c *Collector) processTopLevelDeclarations(fCtx *core.FileContext) {
 func (c *Collector) collectBasicDefinitions(node *sitter.Node, fCtx *core.FileContext, currentQN string, occurrences map[string]int) {
 	if node.IsNamed() {
 		if elem, kind := c.identifyElement(node, fCtx, currentQN); elem != nil {
-			// 生成唯一 QN (处理重载、匿名类、ScopeBlock)
+			// 严格保持你验证过的 QN 生成逻辑
 			c.applyUniqueQN(elem, node, currentQN, occurrences, fCtx.SourceBytes)
 			fCtx.AddDefinition(elem, currentQN, node)
 
-			// 如果是容器节点，开启新的作用域递归
 			if c.isScopeContainer(kind, node) {
 				childOccurrences := make(map[string]int)
 				for i := 0; i < int(node.ChildCount()); i++ {
@@ -83,14 +82,14 @@ func (c *Collector) collectBasicDefinitions(node *sitter.Node, fCtx *core.FileCo
 }
 
 // ==========================================
-// 元素识别 (Element Identification)
+// 2. 元素识别逻辑 (Element Identification)
 // ==========================================
 
 func (c *Collector) identifyElement(node *sitter.Node, fCtx *core.FileContext, parentQN string) (*model.CodeElement, model.ElementKind) {
 	var kind model.ElementKind
 	var name string
-
 	kindStr := node.Kind()
+
 	switch kindStr {
 	case "class_declaration":
 		kind = model.Class
@@ -127,7 +126,6 @@ func (c *Collector) identifyElement(node *sitter.Node, fCtx *core.FileContext, p
 	if kind != "" && name == "" {
 		name = c.resolveMissingName(node, kind, parentQN, fCtx.SourceBytes)
 	}
-
 	if kind == "" || name == "" {
 		return nil, ""
 	}
@@ -141,7 +139,7 @@ func (c *Collector) identifyElement(node *sitter.Node, fCtx *core.FileContext, p
 }
 
 // ==========================================
-// 元数据填充 (Metadata Enrichment)
+// 3. 元数据填充 (Metadata Enrichment)
 // ==========================================
 
 func (c *Collector) enrichMetadata(fCtx *core.FileContext) {
@@ -169,18 +167,15 @@ func (c *Collector) processMetadataForEntry(entry *core.DefinitionEntry, fCtx *c
 		}
 	case model.Class, model.Interface, model.KAnnotation:
 		c.fillTypeMetadata(elem, node, extra, mods, isFinal, fCtx)
-	case model.Field, model.Variable:
-		c.fillVariableMetadata(elem, node, extra, mods, isStatic, isFinal, fCtx)
+	// --- 拆分点 ---
+	case model.Field:
+		c.fillFieldMetadata(elem, node, extra, mods, isStatic, isFinal, fCtx)
+	case model.Variable:
+		c.fillLocalVariableMetadata(elem, node, extra, mods, isFinal, fCtx)
+	// --- --- ---
 	case model.EnumConstant:
-		// 提取枚举构造参数，如 (404, "Not Found")
-		if argList := c.findNamedChildOfType(node, "argument_list"); argList != nil {
-			var args []string
-			for i := 0; i < int(argList.NamedChildCount()); i++ {
-				args = append(args, c.getNodeContent(argList.NamedChild(uint(i)), *fCtx.SourceBytes))
-			}
-			extra.Mores[EnumArguments] = args
-		}
-		elem.Signature = elem.Name // 或者根据需要拼接参数
+		c.fillEnumConstantMetadata(node, extra, fCtx)
+		elem.Signature = elem.Name
 	case model.ScopeBlock:
 		c.fillScopeBlockMetadata(elem, node, extra)
 	}
@@ -188,7 +183,7 @@ func (c *Collector) processMetadataForEntry(entry *core.DefinitionEntry, fCtx *c
 }
 
 // ==========================================
-// 具体填充逻辑 (Sub-fillers)
+// 4. 私有填充工具 (Metadata Sub-fillers)
 // ==========================================
 
 func (c *Collector) fillTypeMetadata(elem *model.CodeElement, node *sitter.Node, extra *model.Extra, mods []string, isFinal bool, fCtx *core.FileContext) {
@@ -207,18 +202,9 @@ func (c *Collector) fillTypeMetadata(elem *model.CodeElement, node *sitter.Node,
 		heritage += " " + content
 	}
 
-	var ifacesNode *sitter.Node
-	if n := node.ChildByFieldName("interfaces"); n != nil {
-		ifacesNode = n
-	} else if n := node.ChildByFieldName("extends"); n != nil {
-		ifacesNode = n
-	} else {
-		ifacesNode = c.findNamedChildOfType(node, "extends_interfaces")
-	}
-
+	ifacesNode := c.findInterfacesNode(node)
 	if ifacesNode != nil {
-		ifaces := c.extractInterfaceListFromNode(ifacesNode, fCtx.SourceBytes)
-		if len(ifaces) > 0 {
+		if ifaces := c.extractInterfaceListFromNode(ifacesNode, fCtx.SourceBytes); len(ifaces) > 0 {
 			mKey := InterfaceImplementedInterfaces
 			if elem.Kind == model.Class {
 				mKey = ClassImplementedInterfaces
@@ -241,13 +227,11 @@ func (c *Collector) fillMethodMetadata(elem *model.CodeElement, node *sitter.Nod
 		extra.Mores[MethodReturnType] = retType
 	}
 
-	// 参数处理
 	paramsRaw := c.extractParameterWithNames(node, fCtx.SourceBytes)
 	if params := c.extractParameterList(node, fCtx.SourceBytes); len(params) > 0 {
 		extra.Mores[MethodParameters] = params
 	}
 
-	// 异常处理与 Signature 修复
 	throwsList := c.extractThrows(node, fCtx.SourceBytes)
 	throwsStr := ""
 	if len(throwsList) > 0 {
@@ -259,6 +243,43 @@ func (c *Collector) fillMethodMetadata(elem *model.CodeElement, node *sitter.Nod
 		strings.Join(mods, " "), retType, elem.Name, paramsRaw, throwsStr))
 }
 
+func (c *Collector) fillFieldMetadata(elem *model.CodeElement, node *sitter.Node, extra *model.Extra, mods []string, isStatic, isFinal bool, fCtx *core.FileContext) {
+	vType := c.extractTypeString(node, fCtx.SourceBytes)
+
+	// 填充 Field 专属元数据
+	extra.Mores[FieldType] = vType
+	extra.Mores[FieldIsStatic] = isStatic
+	extra.Mores[FieldIsFinal] = isFinal
+	extra.Mores[FieldIsConstant] = isStatic && isFinal // 方便后续判断是否为常量引用
+
+	// 构建 Signature: [public static] String myField
+	elem.Signature = strings.TrimSpace(fmt.Sprintf("%s %s %s", strings.Join(mods, " "), vType, elem.Name))
+}
+
+func (c *Collector) fillLocalVariableMetadata(elem *model.CodeElement, node *sitter.Node, extra *model.Extra, mods []string, isFinal bool, fCtx *core.FileContext) {
+	vType := c.extractTypeString(node, fCtx.SourceBytes)
+
+	// 填充 Variable 专属元数据
+	extra.Mores[VariableType] = vType
+	extra.Mores[VariableIsFinal] = isFinal
+
+	// 区分是普通局部变量还是方法参数
+	extra.Mores[VariableIsParam] = (node.Kind() == "formal_parameter" || node.Kind() == "spread_parameter")
+
+	// 构建 Signature: [final] int count
+	elem.Signature = strings.TrimSpace(fmt.Sprintf("%s %s %s", strings.Join(mods, " "), vType, elem.Name))
+}
+
+func (c *Collector) fillEnumConstantMetadata(node *sitter.Node, extra *model.Extra, fCtx *core.FileContext) {
+	if argList := c.findNamedChildOfType(node, "argument_list"); argList != nil {
+		var args []string
+		for i := 0; i < int(argList.NamedChildCount()); i++ {
+			args = append(args, c.getNodeContent(argList.NamedChild(uint(i)), *fCtx.SourceBytes))
+		}
+		extra.Mores[EnumArguments] = args
+	}
+}
+
 func (c *Collector) fillAnnotationMember(elem *model.CodeElement, node *sitter.Node, extra *model.Extra, fCtx *core.FileContext) {
 	extra.Mores[MethodIsAnnotation] = true
 	if valNode := node.ChildByFieldName("value"); valNode != nil {
@@ -266,19 +287,6 @@ func (c *Collector) fillAnnotationMember(elem *model.CodeElement, node *sitter.N
 	}
 	vType := c.getNodeContent(node.ChildByFieldName("type"), *fCtx.SourceBytes)
 	elem.Signature = fmt.Sprintf("%s %s()", vType, elem.Name)
-}
-
-func (c *Collector) fillVariableMetadata(elem *model.CodeElement, node *sitter.Node, extra *model.Extra, mods []string, isStatic, isFinal bool, fCtx *core.FileContext) {
-	vType := c.extractTypeString(node, fCtx.SourceBytes)
-	extra.Mores[VariableType] = vType
-	extra.Mores[VariableIsFinal] = isFinal
-	if elem.Kind == model.Field {
-		extra.Mores[FieldIsStatic], extra.Mores[FieldIsFinal], extra.Mores[FieldType] = isStatic, isFinal, vType
-		extra.Mores[FieldIsConstant] = isStatic && isFinal
-	} else {
-		extra.Mores[VariableIsParam] = (node.Kind() == "formal_parameter" || node.Kind() == "spread_parameter")
-	}
-	elem.Signature = strings.TrimSpace(fmt.Sprintf("%s %s %s", strings.Join(mods, " "), vType, elem.Name))
 }
 
 func (c *Collector) fillScopeBlockMetadata(elem *model.CodeElement, node *sitter.Node, extra *model.Extra) {
@@ -291,7 +299,7 @@ func (c *Collector) fillScopeBlockMetadata(elem *model.CodeElement, node *sitter
 }
 
 // ==========================================
-// 辅助工具 (Helper Utilities)
+// 5. 辅助工具逻辑 (Helper Utilities)
 // ==========================================
 
 func (c *Collector) handleImport(node *sitter.Node, fCtx *core.FileContext) {
@@ -335,6 +343,7 @@ func (c *Collector) handleImport(node *sitter.Node, fCtx *core.FileContext) {
 
 func (c *Collector) applyUniqueQN(elem *model.CodeElement, node *sitter.Node, parentQN string, occurrences map[string]int, src *[]byte) {
 	identity := elem.Name
+	// 严格遵循之前的判断条件，防止构造函数或重载方法匹配失效
 	if elem.Kind == model.Method &&
 		(node.Kind() == "method_declaration" || node.Kind() == "constructor_declaration" || node.Kind() == "annotation_type_element_declaration") {
 		identity += c.extractParameterTypesOnly(node, src)
@@ -370,6 +379,7 @@ func (c *Collector) extractParameterTypesOnly(node *sitter.Node, src *[]byte) st
 	var types []string
 	for i := 0; i < int(pNode.NamedChildCount()); i++ {
 		param := pNode.NamedChild(uint(i))
+		// 移除泛型部分，仅保留基本类名用于签名区分
 		tStr := strings.Split(c.extractTypeString(param, src), "<")[0]
 		types = append(types, strings.TrimSpace(tStr))
 	}
@@ -384,7 +394,6 @@ func (c *Collector) extractThrows(node *sitter.Node, src *[]byte) []string {
 	var types []string
 	for i := 0; i < int(tNode.NamedChildCount()); i++ {
 		child := tNode.NamedChild(uint(i))
-		// 关键点：跳过关键字，只保留异常类型
 		if child.IsNamed() && child.Kind() != "throws" {
 			types = append(types, c.getNodeContent(child, *src))
 		}
@@ -394,8 +403,7 @@ func (c *Collector) extractThrows(node *sitter.Node, src *[]byte) []string {
 
 func (c *Collector) extractModifiersAndAnnotations(n *sitter.Node, src []byte) ([]string, []string) {
 	var mods, annos []string
-	mNode := c.findNamedChildOfType(n, "modifiers")
-	if mNode != nil {
+	if mNode := c.findNamedChildOfType(n, "modifiers"); mNode != nil {
 		for i := 0; i < int(mNode.ChildCount()); i++ {
 			child := mNode.Child(uint(i))
 			txt := c.getNodeContent(child, src)
@@ -441,13 +449,27 @@ func (c *Collector) extractInterfaceListFromNode(node *sitter.Node, src *[]byte)
 	return results
 }
 
+func (c *Collector) findInterfacesNode(node *sitter.Node) *sitter.Node {
+	if n := node.ChildByFieldName("interfaces"); n != nil {
+		return n
+	}
+	if n := node.ChildByFieldName("extends"); n != nil {
+		return n
+	}
+	return c.findNamedChildOfType(node, "extends_interfaces")
+}
+
 // ==========================================
-// 基础 Helper (Atomic Operations)
+// 6. 原子辅助函数 (Atomic Helpers)
 // ==========================================
 
 func (c *Collector) isScopeContainer(k model.ElementKind, node *sitter.Node) bool {
-	return k == model.Class || k == model.Interface || k == model.Enum || k == model.KAnnotation ||
-		k == model.Method || k == model.Lambda || k == model.ScopeBlock || k == model.AnonymousClass
+	switch k {
+	case model.Class, model.Interface, model.Enum, model.KAnnotation,
+		model.Method, model.Lambda, model.ScopeBlock, model.AnonymousClass:
+		return true
+	}
+	return false
 }
 
 func (c *Collector) extractVariableName(node *sitter.Node, src *[]byte) string {
@@ -490,7 +512,6 @@ func (c *Collector) resolveMissingName(node *sitter.Node, kind model.ElementKind
 	if nNode := node.ChildByFieldName("name"); nNode != nil {
 		return c.getNodeContent(nNode, *src)
 	}
-	// 如果是方法且没有名字（构造函数在 AST 中可能没有 name field），取父节点（类）的名称
 	if kind == model.Method {
 		parts := strings.Split(parentQN, ".")
 		return parts[len(parts)-1]
