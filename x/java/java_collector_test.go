@@ -1442,6 +1442,220 @@ func TestJavaCollector_Imports(t *testing.T) {
 	})
 }
 
+func TestJavaCollector_MethodOverloading(t *testing.T) {
+	// 1. 初始化解析环境
+	filePath := getTestFilePath(filepath.Join("com", "example", "base", "test", "MethodTest.java"))
+	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, false, true)
+	if err != nil {
+		t.Fatalf("Failed to parse file: %v", err)
+	}
+
+	// 2. 执行 Collector
+	collector := java.NewJavaCollector()
+	fCtx, err := collector.CollectDefinitions(rootNode, filePath, sourceBytes)
+	if err != nil {
+		t.Fatalf("CollectDefinitions failed: %v", err)
+	}
+
+	printCodeElements(fCtx)
+
+	// --- 断言开始 ---
+
+	// 1. 验证构造函数识别
+	t.Run("Verify Constructor", func(t *testing.T) {
+		qn := "com.example.base.MethodTest.MethodTest()"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("Constructor not found by QN: %s", qn)
+		}
+		elem := defs[0].Element
+
+		if isCons, _ := elem.Extra.Mores[java.MethodIsConstructor].(bool); !isCons {
+			t.Errorf("Expected MethodIsConstructor to be true")
+		}
+		if elem.Kind != model.Method {
+			t.Errorf("Expected Kind Method, got %s", elem.Kind)
+		}
+	})
+
+	// 2. 验证方法重载 (Overloading) 的 QN 唯一性
+	t.Run("Verify Method Overloading QNs", func(t *testing.T) {
+		overloads := []struct {
+			qn       string
+			expected string
+		}{
+			{"com.example.base.MethodTest.exec(int)", "void"},
+			{"com.example.base.MethodTest.exec(String)", "String"},
+			{"com.example.base.MethodTest.exec(int,String)", "void"},
+		}
+
+		for _, tc := range overloads {
+			defs := findDefinitionsByQN(fCtx, tc.qn)
+			if len(defs) == 0 {
+				t.Errorf("Method overload not found: %s", tc.qn)
+				continue
+			}
+
+			// 验证返回值提取
+			retType, _ := defs[0].Element.Extra.Mores[java.MethodReturnType].(string)
+			if retType != tc.expected {
+				t.Errorf("For %s, expected return type %s, got %s", tc.qn, tc.expected, retType)
+			}
+		}
+	})
+
+	// 3. 验证 FileContext 里的 SN (Short Name) 聚合
+	t.Run("Verify SN Aggregation", func(t *testing.T) {
+		// exec 这个名字应该对应 3 个定义
+		entries, exists := fCtx.DefinitionsBySN["exec"]
+		if !exists {
+			t.Fatalf("SN 'exec' not found in DefinitionsBySN")
+		}
+		if len(entries) != 3 {
+			t.Errorf("Expected 3 overloads for 'exec', found %d", len(entries))
+		}
+
+		// 验证 QN 是否各不相同
+		qnSet := make(map[string]bool)
+		for _, entry := range entries {
+			qnSet[entry.Element.QualifiedName] = true
+		}
+		if len(qnSet) != 3 {
+			t.Errorf("Duplicate QNs detected in SN aggregation: %v", qnSet)
+		}
+	})
+}
+
+func TestJavaCollector_ParameterScope(t *testing.T) {
+	// 1. 初始化解析环境
+	filePath := getTestFilePath(filepath.Join("com", "example", "base", "test", "ParameterScopeTest.java"))
+	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, false, true)
+	if err != nil {
+		t.Fatalf("Failed to parse file: %v", err)
+	}
+
+	// 2. 执行 Collector
+	collector := java.NewJavaCollector()
+	fCtx, err := collector.CollectDefinitions(rootNode, filePath, sourceBytes)
+	if err != nil {
+		t.Fatalf("CollectDefinitions failed: %v", err)
+	}
+
+	printCodeElements(fCtx)
+
+	// --- 断言开始 ---
+
+	// 1. 验证构造函数参数
+	t.Run("Verify Constructor Parameter", func(t *testing.T) {
+		// 注意 QN 路径：类 -> 构造函数 -> 参数
+		qn := "com.example.base.test.ParameterScopeTest.ParameterScopeTester(String).initialConfig"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("Constructor parameter 'initialConfig' not found at %s", qn)
+		}
+
+		elem := defs[0].Element
+		if elem.Kind != model.Variable {
+			t.Errorf("Expected Kind Variable, got %s", elem.Kind)
+		}
+		if isParam := elem.Extra.Mores[java.VariableIsParam].(bool); !isParam {
+			t.Error("Expected VariableIsParam to be true")
+		}
+	})
+
+	// 2. 验证变长参数 (Varargs)
+	t.Run("Verify Varargs Parameter", func(t *testing.T) {
+		qn := "com.example.base.test.ParameterScopeTest.execute(int,String...).labels"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("Varargs parameter 'labels' not found")
+		}
+
+		vType := defs[0].Element.Extra.Mores[java.VariableType].(string)
+		// 验证你的 extractTypeString 是否正确处理了 "..."
+		if !strings.Contains(vType, "...") {
+			t.Errorf("Expected type with '...', got %s", vType)
+		}
+	})
+
+	// 3. 验证内部类方法参数的作用域层级
+	t.Run("Verify Inner Class Method Parameter", func(t *testing.T) {
+		qn := "com.example.base.test.ParameterScopeTest.InnerWorker.doWork(long).duration"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("Inner class method parameter 'duration' not found")
+		}
+
+		// 验证路径层级是否包含 InnerWorker
+		if !strings.Contains(defs[0].Element.QualifiedName, "InnerWorker") {
+			t.Errorf("Parameter QN missing inner class scope: %s", defs[0].Element.QualifiedName)
+		}
+
+		// 验证 Signature 格式: long duration
+		if !strings.Contains(defs[0].Element.Signature, "long duration") {
+			t.Errorf("Invalid signature: %s", defs[0].Element.Signature)
+		}
+	})
+}
+
+func TestJavaCollector_ScopeAndShadowing(t *testing.T) {
+	// 1. 初始化解析环境
+	filePath := getTestFilePath(filepath.Join("com", "example", "base", "test", "ScopeTest.java"))
+	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, false, true)
+	if err != nil {
+		t.Fatalf("Failed to parse file: %v", err)
+	}
+
+	// 2. 执行 Collector
+	collector := java.NewJavaCollector()
+	fCtx, err := collector.CollectDefinitions(rootNode, filePath, sourceBytes)
+	if err != nil {
+		t.Fatalf("CollectDefinitions failed: %v", err)
+	}
+
+	printCodeElements(fCtx)
+
+	// --- 断言开始 ---
+
+	// 1. 验证方法直接作用域下的变量 x (第一次出现，无后缀)
+	t.Run("Verify Root Method Variable", func(t *testing.T) {
+		qn := "com.example.base.ScopeTest.test().x" // 修正：移除 $1
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("Root variable x not found")
+		}
+	})
+
+	// 2. 验证第一个独立代码块 { int x = 2; }
+	t.Run("Verify First Block Shadowing", func(t *testing.T) {
+		// block 始终带 $n，但 block 内部的第一个 x 不带 $n
+		qn := "com.example.base.ScopeTest.test().block$1.x"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("Variable in block$1 not found")
+		}
+	})
+
+	// 3. 验证 if 分支代码块 { int x = 3; }
+	t.Run("Verify If-Statement Block", func(t *testing.T) {
+		qn := "com.example.base.ScopeTest.test().block$2.x"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("Variable in block$2 not found")
+		}
+	})
+
+	// 4. 验证 Lambda 表达式及其内部变量
+	t.Run("Verify Lambda Scope", func(t *testing.T) {
+		// 根据日志，Lambda 内部还有一个自动生成的 block$1
+		// QN: com.example.base.ScopeTest.test().lambda$1.block$1.x
+		lambdaVarQN := "com.example.base.ScopeTest.test().lambda$1.block$1.x"
+		if len(findDefinitionsByQN(fCtx, lambdaVarQN)) == 0 {
+			t.Errorf("Variable x not found inside Lambda block scope")
+		}
+	})
+}
+
 // 辅助函数：根据 QN 在 fCtx 中查找定义
 func findDefinitionsByQN(fCtx *core.FileContext, targetQN string) []*core.DefinitionEntry {
 	var result []*core.DefinitionEntry
