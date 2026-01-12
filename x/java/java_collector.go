@@ -21,19 +21,21 @@ func NewJavaCollector() *Collector {
 	return &Collector{resolver: resolver}
 }
 
-// --- 核心流程 ---
+// ==========================================
+// 核心流程 (Core Workflow)
+// ==========================================
 
 func (c *Collector) CollectDefinitions(rootNode *sitter.Node, filePath string, sourceBytes *[]byte) (*core.FileContext, error) {
 	fCtx := core.NewFileContext(filePath, rootNode, sourceBytes)
 
-	// 1. 预处理：包名与导入
+	// 1. 处理包声明和导入声明 (Top-level)
 	c.processTopLevelDeclarations(fCtx)
 
-	// 2. 阶段一：基础定义收集与唯一 QN 分配
+	// 2. 递归收集基础定义 (Kind, Name, QN, Location)
 	nameOccurrence := make(map[string]int)
 	c.collectBasicDefinitions(fCtx.RootNode, fCtx, fCtx.PackageName, nameOccurrence)
 
-	// 3. 阶段二：填充详细元数据
+	// 3. 二次遍历填充元数据 (Signature, Modifiers, Annotations, Mores)
 	c.enrichMetadata(fCtx)
 
 	return fCtx, nil
@@ -45,13 +47,12 @@ func (c *Collector) processTopLevelDeclarations(fCtx *core.FileContext) {
 		if child == nil {
 			continue
 		}
-
 		switch child.Kind() {
 		case "package_declaration":
 			if ident := c.findNamedChildOfType(child, "scoped_identifier"); ident != nil {
 				fCtx.PackageName = c.getNodeContent(ident, *fCtx.SourceBytes)
-			} else if ident := child.ChildByFieldName("name"); ident != nil {
-				fCtx.PackageName = c.getNodeContent(ident, *fCtx.SourceBytes)
+			} else if nameNode := child.ChildByFieldName("name"); nameNode != nil {
+				fCtx.PackageName = c.getNodeContent(nameNode, *fCtx.SourceBytes)
 			}
 		case "import_declaration":
 			c.handleImport(child, fCtx)
@@ -62,10 +63,12 @@ func (c *Collector) processTopLevelDeclarations(fCtx *core.FileContext) {
 func (c *Collector) collectBasicDefinitions(node *sitter.Node, fCtx *core.FileContext, currentQN string, occurrences map[string]int) {
 	if node.IsNamed() {
 		if elem, kind := c.identifyElement(node, fCtx, currentQN); elem != nil {
+			// 生成唯一 QN (处理重载、匿名类、ScopeBlock)
 			c.applyUniqueQN(elem, node, currentQN, occurrences, fCtx.SourceBytes)
 			fCtx.AddDefinition(elem, currentQN, node)
 
-			if c.isScopeContainer(kind) {
+			// 如果是容器节点，开启新的作用域递归
+			if c.isScopeContainer(kind, node) {
 				childOccurrences := make(map[string]int)
 				for i := 0; i < int(node.ChildCount()); i++ {
 					c.collectBasicDefinitions(node.Child(uint(i)), fCtx, elem.QualifiedName, childOccurrences)
@@ -74,11 +77,14 @@ func (c *Collector) collectBasicDefinitions(node *sitter.Node, fCtx *core.FileCo
 			}
 		}
 	}
-
 	for i := 0; i < int(node.ChildCount()); i++ {
 		c.collectBasicDefinitions(node.Child(uint(i)), fCtx, currentQN, occurrences)
 	}
 }
+
+// ==========================================
+// 元素识别 (Element Identification)
+// ==========================================
 
 func (c *Collector) identifyElement(node *sitter.Node, fCtx *core.FileContext, parentQN string) (*model.CodeElement, model.ElementKind) {
 	var kind model.ElementKind
@@ -92,35 +98,26 @@ func (c *Collector) identifyElement(node *sitter.Node, fCtx *core.FileContext, p
 		kind = model.Interface
 	case "enum_declaration":
 		kind = model.Enum
+	case "enum_constant":
+		kind = model.EnumConstant
+		name = c.getNodeContent(node.ChildByFieldName("name"), *fCtx.SourceBytes)
+	case "annotation_type_declaration":
+		kind, name = model.KAnnotation, c.getNodeContent(node.ChildByFieldName("name"), *fCtx.SourceBytes)
+	case "annotation_type_element_declaration":
+		kind, name = model.Method, c.getNodeContent(node.ChildByFieldName("name"), *fCtx.SourceBytes)
 	case "method_declaration", "constructor_declaration":
 		kind = model.Method
 	case "field_declaration", "local_variable_declaration":
 		kind = c.determineVariableKind(kindStr)
 		name = c.extractVariableName(node, fCtx.SourceBytes)
 	case "formal_parameter", "spread_parameter":
-		kind = model.Variable
-		name = c.extractVariableName(node, fCtx.SourceBytes)
+		kind, name = model.Variable, c.extractVariableName(node, fCtx.SourceBytes)
 	case "lambda_expression":
 		kind, name = model.Lambda, "lambda"
 	case "static_initializer":
-		kind = model.ScopeBlock
-		name = "$static"
+		kind, name = model.ScopeBlock, "$static"
 	case "block":
-		parent := node.Parent()
-		if parent == nil {
-			return nil, ""
-		}
-		pKind := parent.Kind()
-		if pKind == "class_body" {
-			kind = model.ScopeBlock
-			name = "$instance"
-		} else if pKind == "method_declaration" || pKind == "constructor_declaration" || pKind == "static_initializer" {
-			// 透明化处理
-			return nil, ""
-		} else {
-			kind = model.ScopeBlock
-			name = "block"
-		}
+		kind, name = c.identifyBlockType(node)
 	case "object_creation_expression":
 		if c.findNamedChildOfType(node, "class_body") != nil {
 			kind, name = model.AnonymousClass, "anonymousClass"
@@ -143,7 +140,9 @@ func (c *Collector) identifyElement(node *sitter.Node, fCtx *core.FileContext, p
 	}, kind
 }
 
-// --- 第二阶段：元数据富化 ---
+// ==========================================
+// 元数据填充 (Metadata Enrichment)
+// ==========================================
 
 func (c *Collector) enrichMetadata(fCtx *core.FileContext) {
 	for _, entries := range fCtx.DefinitionsBySN {
@@ -158,93 +157,63 @@ func (c *Collector) processMetadataForEntry(entry *core.DefinitionEntry, fCtx *c
 	mods, annos := c.extractModifiersAndAnnotations(node, *fCtx.SourceBytes)
 	elem.Doc, elem.Comment = c.extractComments(node, fCtx.SourceBytes)
 
-	extra := &model.Extra{
-		Modifiers:   mods,
-		Annotations: annos,
-		Mores:       make(map[string]interface{}),
-	}
-
+	extra := &model.Extra{Modifiers: mods, Annotations: annos, Mores: make(map[string]interface{})}
 	isStatic, isFinal := c.contains(mods, "static"), c.contains(mods, "final")
 
 	switch elem.Kind {
 	case model.Method:
-		c.fillMethodMetadata(elem, node, extra, mods, fCtx)
-	case model.Class, model.Interface:
+		if node.Kind() == "annotation_type_element_declaration" {
+			c.fillAnnotationMember(elem, node, extra, fCtx)
+		} else {
+			c.fillMethodMetadata(elem, node, extra, mods, fCtx)
+		}
+	case model.Class, model.Interface, model.KAnnotation:
 		c.fillTypeMetadata(elem, node, extra, mods, isFinal, fCtx)
 	case model.Field, model.Variable:
 		c.fillVariableMetadata(elem, node, extra, mods, isStatic, isFinal, fCtx)
 	case model.EnumConstant:
-		if args := node.ChildByFieldName("arguments"); args != nil {
-			extra.Mores[EnumArguments] = c.getNodeContent(args, *fCtx.SourceBytes)
+		// 提取枚举构造参数，如 (404, "Not Found")
+		if argList := c.findNamedChildOfType(node, "argument_list"); argList != nil {
+			var args []string
+			for i := 0; i < int(argList.NamedChildCount()); i++ {
+				args = append(args, c.getNodeContent(argList.NamedChild(uint(i)), *fCtx.SourceBytes))
+			}
+			extra.Mores[EnumArguments] = args
 		}
+		elem.Signature = elem.Name // 或者根据需要拼接参数
 	case model.ScopeBlock:
-		isStaticBlock := (node.Kind() == "static_initializer")
-		extra.Mores[BlockIsStatic] = isStaticBlock
-		prefix := ""
-		if isStaticBlock {
-			prefix = "static "
-		}
-		elem.Signature = prefix + "{...}"
+		c.fillScopeBlockMetadata(elem, node, extra)
 	}
 	elem.Extra = extra
 }
 
-// --- 专项提取逻辑 ---
-
-func (c *Collector) fillMethodMetadata(elem *model.CodeElement, node *sitter.Node, extra *model.Extra, mods []string, fCtx *core.FileContext) {
-	extra.Mores[MethodIsConstructor] = (node.Kind() == "constructor_declaration")
-	retType := ""
-	if tNode := node.ChildByFieldName("type"); tNode != nil {
-		retType = c.getNodeContent(tNode, *fCtx.SourceBytes)
-		extra.Mores[MethodReturnType] = retType
-	}
-	if params := c.extractParameterList(node, fCtx.SourceBytes); len(params) > 0 {
-		extra.Mores[MethodParameters] = params
-	}
-	if throws := c.extractThrows(node, fCtx.SourceBytes); len(throws) > 0 {
-		extra.Mores[MethodThrowsTypes] = throws
-	}
-	paramsRaw := c.extractParameterWithNames(node, fCtx.SourceBytes)
-	elem.Signature = strings.TrimSpace(fmt.Sprintf("%s %s %s%s", strings.Join(mods, " "), retType, elem.Name, paramsRaw))
-}
-
-func (c *Collector) fillVariableMetadata(elem *model.CodeElement, node *sitter.Node, extra *model.Extra, mods []string, isStatic, isFinal bool, fCtx *core.FileContext) {
-	vType := c.extractTypeString(node, fCtx.SourceBytes)
-	extra.Mores[VariableType] = vType
-	extra.Mores[VariableIsFinal] = isFinal
-
-	if elem.Kind == model.Field {
-		extra.Mores[FieldIsStatic] = isStatic
-		extra.Mores[FieldIsFinal] = isFinal
-		extra.Mores[FieldIsConstant] = isStatic && isFinal
-		extra.Mores[FieldType] = vType
-	} else {
-		nodeKind := node.Kind()
-		extra.Mores[VariableIsParam] = (nodeKind == "formal_parameter" || nodeKind == "spread_parameter")
-	}
-	elem.Signature = strings.TrimSpace(fmt.Sprintf("%s %s %s", strings.Join(mods, " "), vType, elem.Name))
-}
+// ==========================================
+// 具体填充逻辑 (Sub-fillers)
+// ==========================================
 
 func (c *Collector) fillTypeMetadata(elem *model.CodeElement, node *sitter.Node, extra *model.Extra, mods []string, isFinal bool, fCtx *core.FileContext) {
-	extra.Mores[ClassIsAbstract] = c.contains(mods, "abstract")
-	extra.Mores[ClassIsFinal] = isFinal
+	extra.Mores[ClassIsAbstract], extra.Mores[ClassIsFinal] = c.contains(mods, "abstract"), isFinal
+	extra.Mores[ClassIsStatic] = c.contains(mods, "static")
+
+	typeParams := ""
+	if tpNode := node.ChildByFieldName("type_parameters"); tpNode != nil {
+		typeParams = c.getNodeContent(tpNode, *fCtx.SourceBytes)
+	}
 
 	heritage := ""
 	if super := node.ChildByFieldName("superclass"); super != nil {
 		content := c.getNodeContent(super, *fCtx.SourceBytes)
-		extra.Mores[ClassSuperClass] = strings.TrimPrefix(content, "extends ")
+		extra.Mores[ClassSuperClass] = strings.TrimSpace(strings.TrimPrefix(content, "extends"))
 		heritage += " " + content
 	}
 
 	var ifacesNode *sitter.Node
 	if n := node.ChildByFieldName("interfaces"); n != nil {
 		ifacesNode = n
-	} else if n := node.ChildByFieldName("extends_interfaces"); n != nil {
+	} else if n := node.ChildByFieldName("extends"); n != nil {
 		ifacesNode = n
-	} else if n := c.findNamedChildOfType(node, "interfaces"); n != nil {
-		ifacesNode = n
-	} else if n := c.findNamedChildOfType(node, "extends_interfaces"); n != nil {
-		ifacesNode = n
+	} else {
+		ifacesNode = c.findNamedChildOfType(node, "extends_interfaces")
 	}
 
 	if ifacesNode != nil {
@@ -259,21 +228,75 @@ func (c *Collector) fillTypeMetadata(elem *model.CodeElement, node *sitter.Node,
 		}
 	}
 
-	typeParams := ""
-	if tpNode := node.ChildByFieldName("type_parameters"); tpNode != nil {
-		typeParams = c.getNodeContent(tpNode, *fCtx.SourceBytes)
-	}
-
 	displayKind := strings.Replace(node.Kind(), "_declaration", "", 1)
-	elem.Signature = strings.TrimSpace(fmt.Sprintf("%s %s %s%s%s", strings.Join(mods, " "), displayKind, elem.Name, typeParams, heritage))
+	elem.Signature = strings.TrimSpace(fmt.Sprintf("%s %s %s%s%s",
+		strings.Join(mods, " "), displayKind, elem.Name, typeParams, heritage))
 }
 
-// --- 提取相关函数 ---
+func (c *Collector) fillMethodMetadata(elem *model.CodeElement, node *sitter.Node, extra *model.Extra, mods []string, fCtx *core.FileContext) {
+	extra.Mores[MethodIsConstructor] = (node.Kind() == "constructor_declaration")
+	retType := ""
+	if tNode := node.ChildByFieldName("type"); tNode != nil {
+		retType = c.getNodeContent(tNode, *fCtx.SourceBytes)
+		extra.Mores[MethodReturnType] = retType
+	}
+
+	// 参数处理
+	paramsRaw := c.extractParameterWithNames(node, fCtx.SourceBytes)
+	if params := c.extractParameterList(node, fCtx.SourceBytes); len(params) > 0 {
+		extra.Mores[MethodParameters] = params
+	}
+
+	// 异常处理与 Signature 修复
+	throwsList := c.extractThrows(node, fCtx.SourceBytes)
+	throwsStr := ""
+	if len(throwsList) > 0 {
+		extra.Mores[MethodThrowsTypes] = throwsList
+		throwsStr = " throws " + strings.Join(throwsList, ", ")
+	}
+
+	elem.Signature = strings.TrimSpace(fmt.Sprintf("%s %s %s%s%s",
+		strings.Join(mods, " "), retType, elem.Name, paramsRaw, throwsStr))
+}
+
+func (c *Collector) fillAnnotationMember(elem *model.CodeElement, node *sitter.Node, extra *model.Extra, fCtx *core.FileContext) {
+	extra.Mores[MethodIsAnnotation] = true
+	if valNode := node.ChildByFieldName("value"); valNode != nil {
+		extra.Mores[MethodDefaultValue] = c.getNodeContent(valNode, *fCtx.SourceBytes)
+	}
+	vType := c.getNodeContent(node.ChildByFieldName("type"), *fCtx.SourceBytes)
+	elem.Signature = fmt.Sprintf("%s %s()", vType, elem.Name)
+}
+
+func (c *Collector) fillVariableMetadata(elem *model.CodeElement, node *sitter.Node, extra *model.Extra, mods []string, isStatic, isFinal bool, fCtx *core.FileContext) {
+	vType := c.extractTypeString(node, fCtx.SourceBytes)
+	extra.Mores[VariableType] = vType
+	extra.Mores[VariableIsFinal] = isFinal
+	if elem.Kind == model.Field {
+		extra.Mores[FieldIsStatic], extra.Mores[FieldIsFinal], extra.Mores[FieldType] = isStatic, isFinal, vType
+		extra.Mores[FieldIsConstant] = isStatic && isFinal
+	} else {
+		extra.Mores[VariableIsParam] = (node.Kind() == "formal_parameter" || node.Kind() == "spread_parameter")
+	}
+	elem.Signature = strings.TrimSpace(fmt.Sprintf("%s %s %s", strings.Join(mods, " "), vType, elem.Name))
+}
+
+func (c *Collector) fillScopeBlockMetadata(elem *model.CodeElement, node *sitter.Node, extra *model.Extra) {
+	isStatic := (node.Kind() == "static_initializer")
+	extra.Mores[BlockIsStatic] = isStatic
+	elem.Signature = "{...}"
+	if isStatic {
+		elem.Signature = "static {...}"
+	}
+}
+
+// ==========================================
+// 辅助工具 (Helper Utilities)
+// ==========================================
 
 func (c *Collector) handleImport(node *sitter.Node, fCtx *core.FileContext) {
 	isStatic := false
 	var pathParts []string
-
 	for i := 0; i < int(node.ChildCount()); i++ {
 		child := node.Child(uint(i))
 		kind := child.Kind()
@@ -285,20 +308,16 @@ func (c *Collector) handleImport(node *sitter.Node, fCtx *core.FileContext) {
 			pathParts = append(pathParts, c.getNodeContent(child, *fCtx.SourceBytes))
 		}
 	}
-
 	if len(pathParts) == 0 {
 		return
 	}
-
 	fullPath := strings.Join(pathParts, ".")
 	isWildcard := strings.HasSuffix(fullPath, ".*") || pathParts[len(pathParts)-1] == "*"
-
 	entry := &core.ImportEntry{
 		RawImportPath: fullPath,
 		IsWildcard:    isWildcard,
 		Location:      c.extractLocation(node, fCtx.FilePath),
 	}
-
 	var alias string
 	if isWildcard {
 		alias = "*"
@@ -311,18 +330,27 @@ func (c *Collector) handleImport(node *sitter.Node, fCtx *core.FileContext) {
 			entry.Kind = model.Constant
 		}
 	}
-	entry.Alias = alias
 	fCtx.AddImport(alias, entry)
 }
 
+func (c *Collector) applyUniqueQN(elem *model.CodeElement, node *sitter.Node, parentQN string, occurrences map[string]int, src *[]byte) {
+	identity := elem.Name
+	if elem.Kind == model.Method &&
+		(node.Kind() == "method_declaration" || node.Kind() == "constructor_declaration" || node.Kind() == "annotation_type_element_declaration") {
+		identity += c.extractParameterTypesOnly(node, src)
+	}
+	occurrences[identity]++
+	count := occurrences[identity]
+	if elem.Kind == model.AnonymousClass || elem.Kind == model.Lambda || elem.Kind == model.ScopeBlock || count > 1 {
+		identity = fmt.Sprintf("%s$%d", identity, count)
+	}
+	elem.QualifiedName = c.resolver.BuildQualifiedName(parentQN, identity)
+}
+
 func (c *Collector) extractTypeString(node *sitter.Node, src *[]byte) string {
-	// 针对 formal_parameter 尝试通过 field name 寻找
 	if tNode := node.ChildByFieldName("type"); tNode != nil {
 		return c.getNodeContent(tNode, *src)
 	}
-
-	// 针对 spread_parameter (Object... values) 的特殊处理
-	// 在 Java AST 中，spread_parameter 的结构通常包含一个 type 节点和 ... 符号
 	if node.Kind() == "spread_parameter" {
 		for i := 0; i < int(node.NamedChildCount()); i++ {
 			child := node.NamedChild(uint(i))
@@ -339,39 +367,34 @@ func (c *Collector) extractParameterTypesOnly(node *sitter.Node, src *[]byte) st
 	if pNode == nil {
 		return "()"
 	}
-
 	var types []string
 	for i := 0; i < int(pNode.NamedChildCount()); i++ {
 		param := pNode.NamedChild(uint(i))
-		tStr := c.extractTypeString(param, src) // 统一调用 extractTypeString
-
-		// 去掉泛型，只保留基础类型名用于 QN 匹配
-		tStr = strings.Split(tStr, "<")[0]
+		tStr := strings.Split(c.extractTypeString(param, src), "<")[0]
 		types = append(types, strings.TrimSpace(tStr))
 	}
 	return "(" + strings.Join(types, ",") + ")"
 }
 
-func (c *Collector) extractVariableName(node *sitter.Node, src *[]byte) string {
-	if nNode := node.ChildByFieldName("name"); nNode != nil {
-		return c.getNodeContent(nNode, *src)
+func (c *Collector) extractThrows(node *sitter.Node, src *[]byte) []string {
+	tNode := c.findNamedChildOfType(node, "throws")
+	if tNode == nil {
+		return nil
 	}
-	// 处理变数定义中的 declarator
-	if vd := c.findNamedChildOfType(node, "variable_declarator"); vd != nil {
-		if nNode := vd.ChildByFieldName("name"); nNode != nil {
-			return c.getNodeContent(nNode, *src)
+	var types []string
+	for i := 0; i < int(tNode.NamedChildCount()); i++ {
+		child := tNode.NamedChild(uint(i))
+		// 关键点：跳过关键字，只保留异常类型
+		if child.IsNamed() && child.Kind() != "throws" {
+			types = append(types, c.getNodeContent(child, *src))
 		}
 	}
-	return ""
+	return types
 }
 
 func (c *Collector) extractModifiersAndAnnotations(n *sitter.Node, src []byte) ([]string, []string) {
 	var mods, annos []string
-	mNode := n.ChildByFieldName("modifiers")
-	if mNode == nil {
-		mNode = c.findNamedChildOfType(n, "modifiers")
-	}
-
+	mNode := c.findNamedChildOfType(n, "modifiers")
 	if mNode != nil {
 		for i := 0; i < int(mNode.ChildCount()); i++ {
 			child := mNode.Child(uint(i))
@@ -386,7 +409,60 @@ func (c *Collector) extractModifiersAndAnnotations(n *sitter.Node, src []byte) (
 	return mods, annos
 }
 
-func (c *Collector) extractComments(node *sitter.Node, src *[]byte) (doc string, comment string) {
+func (c *Collector) identifyBlockType(node *sitter.Node) (model.ElementKind, string) {
+	parent := node.Parent()
+	if parent == nil {
+		return "", ""
+	}
+	pKind := parent.Kind()
+	if pKind == "class_body" {
+		return model.ScopeBlock, "$instance"
+	}
+	if pKind == "method_declaration" || pKind == "constructor_declaration" || pKind == "static_initializer" {
+		return "", ""
+	}
+	return model.ScopeBlock, "block"
+}
+
+func (c *Collector) extractInterfaceListFromNode(node *sitter.Node, src *[]byte) []string {
+	var results []string
+	target := node
+	if node.Kind() != "type_list" {
+		if listNode := c.findNamedChildOfType(node, "type_list"); listNode != nil {
+			target = listNode
+		}
+	}
+	for i := 0; i < int(target.NamedChildCount()); i++ {
+		child := target.NamedChild(uint(i))
+		if strings.Contains(child.Kind(), "type") || child.Kind() == "type_identifier" {
+			results = append(results, c.getNodeContent(child, *src))
+		}
+	}
+	return results
+}
+
+// ==========================================
+// 基础 Helper (Atomic Operations)
+// ==========================================
+
+func (c *Collector) isScopeContainer(k model.ElementKind, node *sitter.Node) bool {
+	return k == model.Class || k == model.Interface || k == model.Enum || k == model.KAnnotation ||
+		k == model.Method || k == model.Lambda || k == model.ScopeBlock || k == model.AnonymousClass
+}
+
+func (c *Collector) extractVariableName(node *sitter.Node, src *[]byte) string {
+	if nNode := node.ChildByFieldName("name"); nNode != nil {
+		return c.getNodeContent(nNode, *src)
+	}
+	if vd := c.findNamedChildOfType(node, "variable_declarator"); vd != nil {
+		if nNode := vd.ChildByFieldName("name"); nNode != nil {
+			return c.getNodeContent(nNode, *src)
+		}
+	}
+	return ""
+}
+
+func (c *Collector) extractComments(node *sitter.Node, src *[]byte) (doc, comment string) {
 	curr := node
 	if node.Kind() == "variable_declarator" && node.Parent() != nil {
 		curr = node.Parent()
@@ -410,89 +486,16 @@ func (c *Collector) extractComments(node *sitter.Node, src *[]byte) (doc string,
 	return
 }
 
-func (c *Collector) extractInterfaceListFromNode(node *sitter.Node, src *[]byte) []string {
-	var results []string
-	target := node
-	if listNode := c.findNamedChildOfType(node, "type_list"); listNode != nil {
-		target = listNode
-	}
-	for i := 0; i < int(target.NamedChildCount()); i++ {
-		child := target.NamedChild(uint(i))
-		if strings.Contains(child.Kind(), "type") {
-			results = append(results, c.getNodeContent(child, *src))
-		}
-	}
-	return results
-}
-
-func (c *Collector) extractParameterList(node *sitter.Node, src *[]byte) []string {
-	pNode := node.ChildByFieldName("parameters")
-	if pNode == nil {
-		return nil
-	}
-	var params []string
-	for i := 0; i < int(pNode.NamedChildCount()); i++ {
-		params = append(params, c.getNodeContent(pNode.NamedChild(uint(i)), *src))
-	}
-	return params
-}
-
-func (c *Collector) extractParameterWithNames(node *sitter.Node, src *[]byte) string {
-	pNode := node.ChildByFieldName("parameters")
-	if pNode == nil {
-		return "()"
-	}
-	return c.getNodeContent(pNode, *src)
-}
-
-func (c *Collector) extractThrows(node *sitter.Node, src *[]byte) []string {
-	tNode := node.ChildByFieldName("throws")
-	if tNode == nil {
-		tNode = c.findNamedChildOfType(node, "throws")
-	}
-	if tNode == nil {
-		return nil
-	}
-	var types []string
-	for i := 0; i < int(tNode.NamedChildCount()); i++ {
-		types = append(types, c.getNodeContent(tNode.NamedChild(uint(i)), *src))
-	}
-	return types
-}
-
-func (c *Collector) applyUniqueQN(elem *model.CodeElement, node *sitter.Node, parentQN string, occurrences map[string]int, src *[]byte) {
-	identity := elem.Name
-	if elem.Kind == model.Method {
-		identity += c.extractParameterTypesOnly(node, src)
-	}
-	occurrences[identity]++
-	count := occurrences[identity]
-
-	if elem.Kind == model.AnonymousClass || elem.Kind == model.Lambda || elem.Kind == model.ScopeBlock || count > 1 {
-		identity = fmt.Sprintf("%s$%d", identity, count)
-	}
-	elem.QualifiedName = c.resolver.BuildQualifiedName(parentQN, identity)
-}
-
 func (c *Collector) resolveMissingName(node *sitter.Node, kind model.ElementKind, parentQN string, src *[]byte) string {
 	if nNode := node.ChildByFieldName("name"); nNode != nil {
 		return c.getNodeContent(nNode, *src)
 	}
+	// 如果是方法且没有名字（构造函数在 AST 中可能没有 name field），取父节点（类）的名称
 	if kind == model.Method {
 		parts := strings.Split(parentQN, ".")
 		return parts[len(parts)-1]
 	}
 	return ""
-}
-
-func (c *Collector) extractLocation(n *sitter.Node, filePath string) *model.Location {
-	return &model.Location{
-		FilePath:    filePath,
-		StartLine:   int(n.StartPosition().Row) + 1,
-		EndLine:     int(n.EndPosition().Row) + 1,
-		StartColumn: int(n.StartPosition().Column),
-		EndColumn:   int(n.EndPosition().Column),
-	}
 }
 
 func (c *Collector) getNodeContent(n *sitter.Node, src []byte) string {
@@ -512,10 +515,40 @@ func (c *Collector) findNamedChildOfType(n *sitter.Node, nodeType string) *sitte
 	return nil
 }
 
-func (c *Collector) isScopeContainer(k model.ElementKind) bool {
-	return k == model.Class || k == model.Interface || k == model.Enum ||
-		k == model.Method || k == model.Lambda || k == model.ScopeBlock ||
-		k == model.AnonymousClass
+func (c *Collector) extractLocation(n *sitter.Node, filePath string) *model.Location {
+	return &model.Location{
+		FilePath:    filePath,
+		StartLine:   int(n.StartPosition().Row) + 1,
+		EndLine:     int(n.EndPosition().Row) + 1,
+		StartColumn: int(n.StartPosition().Column),
+		EndColumn:   int(n.EndPosition().Column),
+	}
+}
+
+func (c *Collector) determineVariableKind(kindStr string) model.ElementKind {
+	if kindStr == "local_variable_declaration" {
+		return model.Variable
+	}
+	return model.Field
+}
+
+func (c *Collector) extractParameterList(node *sitter.Node, src *[]byte) []string {
+	pNode := node.ChildByFieldName("parameters")
+	if pNode == nil {
+		return nil
+	}
+	var params []string
+	for i := 0; i < int(pNode.NamedChildCount()); i++ {
+		params = append(params, c.getNodeContent(pNode.NamedChild(uint(i)), *src))
+	}
+	return params
+}
+
+func (c *Collector) extractParameterWithNames(node *sitter.Node, src *[]byte) string {
+	if pNode := node.ChildByFieldName("parameters"); pNode != nil {
+		return c.getNodeContent(pNode, *src)
+	}
+	return "()"
 }
 
 func (c *Collector) contains(slice []string, item string) bool {
@@ -525,11 +558,4 @@ func (c *Collector) contains(slice []string, item string) bool {
 		}
 	}
 	return false
-}
-
-func (c *Collector) determineVariableKind(kindStr string) model.ElementKind {
-	if kindStr == "local_variable_declaration" {
-		return model.Variable
-	}
-	return model.Field
 }
