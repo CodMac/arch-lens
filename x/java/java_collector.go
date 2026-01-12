@@ -221,6 +221,13 @@ func (c *Collector) fillTypeMetadata(elem *model.CodeElement, node *sitter.Node,
 
 func (c *Collector) fillMethodMetadata(elem *model.CodeElement, node *sitter.Node, extra *model.Extra, mods []string, fCtx *core.FileContext) {
 	extra.Mores[MethodIsConstructor] = (node.Kind() == "constructor_declaration")
+
+	// 1. 提取方法级泛型 (例如 <E extends Exception>)
+	typeParams := ""
+	if tpNode := node.ChildByFieldName("type_parameters"); tpNode != nil {
+		typeParams = c.getNodeContent(tpNode, *fCtx.SourceBytes) + " "
+	}
+
 	retType := ""
 	if tNode := node.ChildByFieldName("type"); tNode != nil {
 		retType = c.getNodeContent(tNode, *fCtx.SourceBytes)
@@ -239,8 +246,10 @@ func (c *Collector) fillMethodMetadata(elem *model.CodeElement, node *sitter.Nod
 		throwsStr = " throws " + strings.Join(throwsList, ", ")
 	}
 
-	elem.Signature = strings.TrimSpace(fmt.Sprintf("%s %s %s%s%s",
-		strings.Join(mods, " "), retType, elem.Name, paramsRaw, throwsStr))
+	// 2. 组装 Signature 时加入 typeParams
+	// 格式：[修饰符] [泛型] [返回类型] [方法名]([参数]) [异常]
+	elem.Signature = strings.TrimSpace(fmt.Sprintf("%s %s%s %s%s%s",
+		strings.Join(mods, " "), typeParams, retType, elem.Name, paramsRaw, throwsStr))
 }
 
 func (c *Collector) fillFieldMetadata(elem *model.CodeElement, node *sitter.Node, extra *model.Extra, mods []string, isStatic, isFinal bool, fCtx *core.FileContext) {

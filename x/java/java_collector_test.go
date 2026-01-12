@@ -1112,6 +1112,266 @@ func TestJavaCollector_UserServiceImpl(t *testing.T) {
 	})
 }
 
+func TestJavaCollector_AnonymousAndNested(t *testing.T) {
+	// 1. 初始化解析环境
+	filePath := getTestFilePath(filepath.Join("com", "example", "base", "test", "AnonymousClassTest.java"))
+	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, false, true)
+	if err != nil {
+		t.Fatalf("Failed to parse file: %v", err)
+	}
+
+	// 2. 执行 Collector
+	collector := java.NewJavaCollector()
+	fCtx, err := collector.CollectDefinitions(rootNode, filePath, sourceBytes)
+	if err != nil {
+		t.Fatalf("CollectDefinitions failed: %v", err)
+	}
+
+	printCodeElements(fCtx)
+
+	// --- 断言开始 ---
+
+	// 1. 验证匿名内部类 (通常 QN 带有 $1 等后缀)
+	t.Run("Verify Anonymous Class", func(t *testing.T) {
+		// 匿名类位于 run 方法内部
+		qn := "com.example.base.test.AnonymousClassTest.run().anonymousClass$1"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("Anonymous class not found at %s", qn)
+		}
+		if defs[0].Element.Kind != model.AnonymousClass {
+			t.Errorf("Expected AnonymousClass, got %s", defs[0].Element.Kind)
+		}
+
+		// 验证匿名内部类里的方法
+		methodQN := qn + ".compareTo(String)"
+		if len(findDefinitionsByQN(fCtx, methodQN)) == 0 {
+			t.Errorf("Method compareTo not found inside anonymous class")
+		}
+	})
+
+	// 2. 验证静态内部类
+	t.Run("Verify Static Inner Class", func(t *testing.T) {
+		qn := "com.example.base.test.AnonymousClassTest.Inner"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("Inner class not found")
+		}
+
+		isStatic := defs[0].Element.Extra.Mores[java.ClassIsStatic].(bool)
+		if !isStatic {
+			t.Errorf("Expected Inner class to be static")
+		}
+	})
+
+	// 3. 验证嵌套在内部类里的枚举
+	t.Run("Verify Nested Enum in Inner Class", func(t *testing.T) {
+		qn := "com.example.base.test.AnonymousClassTest.Inner.Color"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("Nested enum Color not found")
+		}
+		if defs[0].Element.Kind != model.Enum {
+			t.Errorf("Expected Enum, got %s", defs[0].Element.Kind)
+		}
+
+		// 验证枚举项
+		constantQN := qn + ".RED"
+		if len(findDefinitionsByQN(fCtx, constantQN)) == 0 {
+			t.Errorf("Enum constant RED not found")
+		}
+	})
+}
+
+func TestJavaCollector_ExtendAndImplement(t *testing.T) {
+	// 1. 初始化解析环境
+	filePath := getTestFilePath(filepath.Join("com", "example", "base", "test", "ExtendAndImplementTest.java"))
+	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, false, true)
+	if err != nil {
+		t.Fatalf("Failed to parse file: %v", err)
+	}
+
+	// 2. 执行 Collector
+	collector := java.NewJavaCollector()
+	fCtx, err := collector.CollectDefinitions(rootNode, filePath, sourceBytes)
+	if err != nil {
+		t.Fatalf("CollectDefinitions failed: %v", err)
+	}
+
+	printCodeElements(fCtx)
+
+	// --- 断言开始 ---
+
+	// 1. 验证抽象类 BaseClass
+	t.Run("Verify Abstract BaseClass", func(t *testing.T) {
+		qn := "com.example.base.test.BaseClass"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("BaseClass not found")
+		}
+		elem := defs[0].Element
+
+		// 验证修饰符
+		if isAbs := elem.Extra.Mores[java.ClassIsAbstract].(bool); !isAbs {
+			t.Errorf("Expected ClassIsAbstract to be true")
+		}
+
+		// 验证接口实现
+		ifaces, _ := elem.Extra.Mores[java.ClassImplementedInterfaces].([]string)
+		if len(ifaces) != 1 || ifaces[0] != "Serializable" {
+			t.Errorf("Expected interface Serializable, got %v", ifaces)
+		}
+
+		// 验证注解 (存在两个注解)
+		annos := elem.Extra.Annotations
+		if len(annos) != 2 {
+			t.Errorf("Expected 2 annotations, got %d", len(annos))
+		}
+	})
+
+	// 2. 验证最终类 FinalClass
+	t.Run("Verify Final FinalClass", func(t *testing.T) {
+		qn := "com.example.base.test.FinalClass"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("FinalClass not found")
+		}
+		elem := defs[0].Element
+
+		// 验证 Final 状态
+		if isFinal := elem.Extra.Mores[java.ClassIsFinal].(bool); !isFinal {
+			t.Errorf("Expected ClassIsFinal to be true")
+		}
+
+		// 验证父类继承
+		super, _ := elem.Extra.Mores[java.ClassSuperClass].(string)
+		if super != "BaseClass" {
+			t.Errorf("Expected SuperClass BaseClass, got %s", super)
+		}
+
+		// 验证多接口实现
+		ifaces, _ := elem.Extra.Mores[java.ClassImplementedInterfaces].([]string)
+		expectedIfaces := []string{"Cloneable", "Runnable"}
+		if len(ifaces) != 2 {
+			t.Errorf("Expected 2 interfaces, got %v", ifaces)
+		}
+		for _, expected := range expectedIfaces {
+			found := false
+			for _, got := range ifaces {
+				if got == expected {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("Expected interface %s not found in %v", expected, ifaces)
+			}
+		}
+	})
+
+	// 3. 验证方法重写与 Signature
+	t.Run("Verify Override Method Signature", func(t *testing.T) {
+		qn := "com.example.base.test.FinalClass.run()"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("Method run() not found")
+		}
+		elem := defs[0].Element
+
+		// 验证包含 @Override 注解
+		hasOverride := false
+		for _, anno := range elem.Extra.Annotations {
+			if strings.Contains(anno, "Override") {
+				hasOverride = true
+				break
+			}
+		}
+		if !hasOverride {
+			t.Errorf("Method run() should have @Override annotation")
+		}
+	})
+}
+
+func TestJavaCollector_GenericComplex(t *testing.T) {
+	// 1. 初始化解析环境
+	filePath := getTestFilePath(filepath.Join("com", "example", "base", "test", "GenericTest.java"))
+	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, false, true)
+	if err != nil {
+		t.Fatalf("Failed to parse file: %v", err)
+	}
+
+	// 2. 执行 Collector
+	collector := java.NewJavaCollector()
+	fCtx, err := collector.CollectDefinitions(rootNode, filePath, sourceBytes)
+	if err != nil {
+		t.Fatalf("CollectDefinitions failed: %v", err)
+	}
+
+	printCodeElements(fCtx)
+
+	// --- 断言开始 ---
+
+	// 1. 验证接口泛型边界 (Intersection Type: Serializable & Cloneable)
+	t.Run("Verify Interface Generic Bounds", func(t *testing.T) {
+		qn := "com.example.base.test.GenericTest"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("Interface GenericTest not found")
+		}
+		elem := defs[0].Element
+
+		// 验证 Signature 是否保留了泛型边界
+		// 预期: interface GenericTest<T extends Serializable & Cloneable>
+		if !strings.Contains(elem.Signature, "<T extends Serializable & Cloneable>") {
+			t.Errorf("Signature missing intersection type bounds: %s", elem.Signature)
+		}
+	})
+
+	// 2. 验证复杂的方法参数与返回类型 (List<? extends T>)
+	t.Run("Verify Complex Wildcard Method", func(t *testing.T) {
+		// 注意：QN 构建时会提取参数类型，并移除泛型部分以保证稳定性
+		qn := "com.example.base.test.GenericTest.findAllByCriteria(List)"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("Method findAllByCriteria not found")
+		}
+		elem := defs[0].Element
+
+		// 验证返回值 (MethodReturnType)
+		retType, _ := elem.Extra.Mores[java.MethodReturnType].(string)
+		if retType != "List<? extends T>" {
+			t.Errorf("Expected return type List<? extends T>, got %s", retType)
+		}
+
+		// 验证原始参数列表 (MethodParameters)
+		params, _ := elem.Extra.Mores[java.MethodParameters].([]string)
+		if len(params) == 0 || params[0] != "List<? super T> criteria" {
+			t.Errorf("Expected param List<? super T> criteria, got %v", params)
+		}
+	})
+
+	// 3. 验证方法级泛型与异常声明 (throws E)
+	t.Run("Verify Method-level Generics and Throws", func(t *testing.T) {
+		qn := "com.example.base.test.GenericTest.executeOrThrow(E)"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("Method executeOrThrow not found")
+		}
+		elem := defs[0].Element
+
+		// 验证 Signature 包含泛型定义 <E extends Exception>
+		if !strings.Contains(elem.Signature, "<E extends Exception>") {
+			t.Errorf("Signature missing method-level generic: %s", elem.Signature)
+		}
+
+		// 验证 Throws 元数据
+		throws, _ := elem.Extra.Mores[java.MethodThrowsTypes].([]string)
+		if len(throws) == 0 || throws[0] != "E" {
+			t.Errorf("Expected throws E, got %v", throws)
+		}
+	})
+}
+
 // 辅助函数：根据 QN 在 fCtx 中查找定义
 func findDefinitionsByQN(fCtx *core.FileContext, targetQN string) []*core.DefinitionEntry {
 	var result []*core.DefinitionEntry
