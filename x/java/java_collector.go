@@ -313,6 +313,7 @@ func (c *Collector) fillScopeBlockMetadata(elem *model.CodeElement, node *sitter
 
 func (c *Collector) handleImport(node *sitter.Node, fCtx *core.FileContext) {
 	isStatic := false
+	isWildcard := false
 	var pathParts []string
 	for i := 0; i < int(node.ChildCount()); i++ {
 		child := node.Child(uint(i))
@@ -323,29 +324,35 @@ func (c *Collector) handleImport(node *sitter.Node, fCtx *core.FileContext) {
 		}
 		if kind == "scoped_identifier" || kind == "identifier" || kind == "asterisk" {
 			pathParts = append(pathParts, c.getNodeContent(child, *fCtx.SourceBytes))
+			if kind == "asterisk" {
+				isWildcard = true
+			}
 		}
 	}
 	if len(pathParts) == 0 {
 		return
 	}
+
 	fullPath := strings.Join(pathParts, ".")
-	isWildcard := strings.HasSuffix(fullPath, ".*") || pathParts[len(pathParts)-1] == "*"
+	parts := strings.Split(fullPath, ".")
+	alias := parts[len(parts)-1]
+
+	var entryKind model.ElementKind
+	if isStatic {
+		entryKind = model.Constant
+	} else if isWildcard {
+		entryKind = model.Package
+	} else {
+		entryKind = model.Class
+	}
+
 	entry := &core.ImportEntry{
+		Kind:          entryKind,
+		Alias:         alias,
 		RawImportPath: fullPath,
 		IsWildcard:    isWildcard,
+		IsStatic:      isStatic,
 		Location:      c.extractLocation(node, fCtx.FilePath),
-	}
-	var alias string
-	if isWildcard {
-		alias = "*"
-		entry.Kind = model.Package
-	} else {
-		parts := strings.Split(fullPath, ".")
-		alias = parts[len(parts)-1]
-		entry.Kind = model.Class
-		if isStatic {
-			entry.Kind = model.Constant
-		}
 	}
 	fCtx.AddImport(alias, entry)
 }

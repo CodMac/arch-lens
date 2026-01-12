@@ -19,6 +19,7 @@ type ImportEntry struct {
 	Alias         string            `json:"Alias"`
 	Kind          model.ElementKind `json:"Kind"`
 	IsWildcard    bool              `json:"IsWildcard"`
+	IsStatic      bool              `json:"IsStatic"`
 	Location      *model.Location   `json:"Location,omitempty"`
 }
 
