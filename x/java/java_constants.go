@@ -11,6 +11,7 @@ const (
 	InterfaceImplementedInterfaces = "java.interface.interfaces"
 	MethodIsConstructor            = "java.method.is_constructor"
 	MethodIsDefault                = "java.method.is_default"
+	MethodIsImplicit               = "java.method.is_implicit"
 	MethodIsAnnotation             = "java.method.is_annotation"
 	MethodDefaultValue             = "java.method.default_value"
 	MethodReturnType               = "java.method.return_type"
@@ -23,5 +24,6 @@ const (
 	FieldIsStatic                  = "java.field.is_static"
 	FieldIsFinal                   = "java.field.is_final"
 	FieldIsConstant                = "java.field.is_constant"
+	FieldIsRecordComponent         = "java.field.is_record_component"
 	EnumArguments                  = "java.enum.arguments"
 )

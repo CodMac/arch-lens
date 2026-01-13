@@ -28,15 +28,18 @@ func NewJavaCollector() *Collector {
 func (c *Collector) CollectDefinitions(rootNode *sitter.Node, filePath string, sourceBytes *[]byte) (*core.FileContext, error) {
 	fCtx := core.NewFileContext(filePath, rootNode, sourceBytes)
 
-	// 第一步：提取包名与导入 (Top-level)
+	// 1. 处理包声明和导入声明
 	c.processTopLevelDeclarations(fCtx)
 
-	// 第二步：深度优先遍历构建符号索引 (QN/Kind/Location)
+	// 2. 递归收集基础定义
 	nameOccurrence := make(map[string]int)
 	c.collectBasicDefinitions(fCtx.RootNode, fCtx, fCtx.PackageName, nameOccurrence)
 
-	// 第三步：二次遍历完善详细元数据 (Signature/Extra)
+	// 3. 二次遍历填充元数据
 	c.enrichMetadata(fCtx)
+
+	// 4. 语法糖增强 (Desugaring)
+	c.applySyntacticSugar(fCtx)
 
 	return fCtx, nil
 }
@@ -81,6 +84,31 @@ func (c *Collector) collectBasicDefinitions(node *sitter.Node, fCtx *core.FileCo
 	}
 }
 
+func (c *Collector) applySyntacticSugar(fCtx *core.FileContext) {
+	var allEntries []*core.DefinitionEntry
+	for _, entries := range fCtx.DefinitionsBySN {
+		allEntries = append(allEntries, entries...)
+	}
+
+	for _, entry := range allEntries {
+		elem := entry.Element
+		node := entry.Node
+
+		switch elem.Kind {
+		case model.Class:
+			// 区分普通类和 Record
+			if node.Kind() == "record_declaration" {
+				c.desugarRecordMembers(elem, node, fCtx)
+			} else if node.Kind() == "class_declaration" {
+				// 只有真正的 class 才补全默认构造函数
+				c.desugarDefaultConstructor(elem, node, fCtx)
+			}
+		case model.Enum:
+			c.desugarEnumMethods(elem, node, fCtx)
+		}
+	}
+}
+
 // ==========================================
 // 2. 元素识别逻辑 (Element Identification)
 // ==========================================
@@ -91,7 +119,7 @@ func (c *Collector) identifyElement(node *sitter.Node, fCtx *core.FileContext, p
 	kindStr := node.Kind()
 
 	switch kindStr {
-	case "class_declaration":
+	case "class_declaration", "record_declaration":
 		kind = model.Class
 	case "interface_declaration":
 		kind = model.Interface
@@ -111,6 +139,9 @@ func (c *Collector) identifyElement(node *sitter.Node, fCtx *core.FileContext, p
 		name = c.extractVariableName(node, fCtx.SourceBytes)
 	case "formal_parameter", "spread_parameter":
 		kind, name = model.Variable, c.extractVariableName(node, fCtx.SourceBytes)
+	case "resource": // try-catch 参数
+		kind = model.Variable
+		name = c.getNodeContent(node.ChildByFieldName("name"), *fCtx.SourceBytes)
 	case "lambda_expression":
 		kind, name = model.Lambda, "lambda"
 	case "static_initializer":
@@ -167,12 +198,10 @@ func (c *Collector) processMetadataForEntry(entry *core.DefinitionEntry, fCtx *c
 		}
 	case model.Class, model.Interface, model.KAnnotation:
 		c.fillTypeMetadata(elem, node, extra, mods, isFinal, fCtx)
-	// --- 拆分点 ---
 	case model.Field:
 		c.fillFieldMetadata(elem, node, extra, mods, isStatic, isFinal, fCtx)
 	case model.Variable:
 		c.fillLocalVariableMetadata(elem, node, extra, mods, isFinal, fCtx)
-	// --- --- ---
 	case model.EnumConstant:
 		c.fillEnumConstantMetadata(node, extra, fCtx)
 		elem.Signature = elem.Name
@@ -308,7 +337,162 @@ func (c *Collector) fillScopeBlockMetadata(elem *model.CodeElement, node *sitter
 }
 
 // ==========================================
-// 5. 辅助工具逻辑 (Helper Utilities)
+// 5. 语法糖增强 (Sugar)
+// ==========================================
+
+func (c *Collector) desugarDefaultConstructor(elem *model.CodeElement, node *sitter.Node, fCtx *core.FileContext) {
+	// 查找类体中是否已经有了显式的构造函数
+	body := node.ChildByFieldName("body")
+	if body == nil {
+		return
+	}
+
+	hasConstructor := false
+	for i := 0; i < int(body.NamedChildCount()); i++ {
+		if body.NamedChild(uint(i)).Kind() == "constructor_declaration" {
+			hasConstructor = true
+			break
+		}
+	}
+
+	if !hasConstructor {
+		// 补全一个无参构造函数
+		consName := elem.Name
+		// 构造函数 QN 通常不带参数名，仅带类型，无参即为 ()
+		consQN := c.resolver.BuildQualifiedName(elem.QualifiedName, consName+"()")
+
+		consElem := &model.CodeElement{
+			Kind:          model.Method,
+			Name:          consName,
+			QualifiedName: consQN,
+			Path:          fCtx.FilePath,
+			Location:      elem.Location, // 指向类声明的位置
+			Signature:     fmt.Sprintf("public %s()", consName),
+			Extra: &model.Extra{
+				Mores: map[string]interface{}{
+					MethodIsConstructor: true,
+					MethodIsImplicit:    true,
+				},
+			},
+		}
+		// 注入到 FileContext
+		fCtx.AddDefinition(consElem, elem.QualifiedName, node)
+	}
+}
+
+func (c *Collector) desugarEnumMethods(elem *model.CodeElement, node *sitter.Node, fCtx *core.FileContext) {
+	// 1. 补全 values()
+	valuesQN := c.resolver.BuildQualifiedName(elem.QualifiedName, "values()")
+	fCtx.AddDefinition(&model.CodeElement{
+		Kind:          model.Method,
+		Name:          "values",
+		QualifiedName: valuesQN,
+		Path:          fCtx.FilePath,
+		Location:      elem.Location,
+		Signature:     fmt.Sprintf("public static %s[] values()", elem.Name),
+		Extra: &model.Extra{
+			Mores: map[string]interface{}{MethodIsImplicit: true},
+		},
+	}, elem.QualifiedName, node)
+
+	// 2. 补全 valueOf(String)
+	valueOfQN := c.resolver.BuildQualifiedName(elem.QualifiedName, "valueOf(String)")
+	fCtx.AddDefinition(&model.CodeElement{
+		Kind:          model.Method,
+		Name:          "valueOf",
+		QualifiedName: valueOfQN,
+		Path:          fCtx.FilePath,
+		Location:      elem.Location,
+		Signature:     fmt.Sprintf("public static %s valueOf(String name)", elem.Name),
+		Extra: &model.Extra{
+			Mores: map[string]interface{}{MethodIsImplicit: true},
+		},
+	}, elem.QualifiedName, node)
+}
+
+func (c *Collector) desugarRecordMembers(elem *model.CodeElement, node *sitter.Node, fCtx *core.FileContext) {
+	paramList := c.findNamedChildOfType(node, "formal_parameters")
+	if paramList == nil {
+		return
+	}
+
+	// 1. 提取组件信息
+	type component struct {
+		name  string
+		vType string
+	}
+	var comps []component
+	for i := 0; i < int(paramList.NamedChildCount()); i++ {
+		child := paramList.NamedChild(uint(i))
+		if child.Kind() == "formal_parameter" {
+			name := c.getNodeContent(child.ChildByFieldName("name"), *fCtx.SourceBytes)
+			vType := c.getNodeContent(child.ChildByFieldName("type"), *fCtx.SourceBytes)
+			comps = append(comps, component{name, vType})
+		}
+	}
+
+	// 2. 更新已有变量的元数据（Record 参数本质就是 Field），不需要 AddDefinition，因为 collectBasicDefinitions 已经加过了
+	for _, comp := range comps {
+		fieldQN := c.resolver.BuildQualifiedName(elem.QualifiedName, comp.name)
+		if defs := fCtx.DefinitionsBySN[comp.name]; len(defs) > 0 {
+			for _, d := range defs {
+				if d.Element.QualifiedName == fieldQN {
+					// 修改 Kind 为 Field 并添加标记
+					d.Element.Kind = model.Field
+					d.Element.Extra.Mores[FieldIsRecordComponent] = true
+					d.Element.Extra.Mores[FieldIsFinal] = true
+				}
+			}
+		}
+	}
+
+	// 3. 生成隐式 Accessor 方法
+	for _, comp := range comps {
+		methodName := comp.name
+		methodIdentity := methodName + "()"
+		methodQN := c.resolver.BuildQualifiedName(elem.QualifiedName, methodIdentity)
+
+		// 重点：使用 c.findDefinitionsByQN 来精准判定是否存在
+		existing := c.findDefinitionsByQN(fCtx, methodQN)
+		if len(existing) == 0 {
+			fCtx.AddDefinition(&model.CodeElement{
+				Kind:          model.Method,
+				Name:          methodName,
+				QualifiedName: methodQN,
+				Path:          fCtx.FilePath,
+				Location:      elem.Location,
+				Signature:     fmt.Sprintf("public %s %s()", comp.vType, methodName),
+				Extra:         &model.Extra{Mores: map[string]interface{}{MethodIsImplicit: true}},
+			}, elem.QualifiedName, node)
+		}
+	}
+
+	// 4. 生成规范构造函数 (修正签名)
+	var paramTypes []string
+	for _, comp := range comps {
+		// 这里的处理必须与 extractParameterTypesOnly 一致
+		tStr := strings.Split(comp.vType, "<")[0]
+		paramTypes = append(paramTypes, strings.TrimSpace(tStr))
+	}
+	consIdentity := fmt.Sprintf("%s(%s)", elem.Name, strings.Join(paramTypes, ","))
+	consQN := c.resolver.BuildQualifiedName(elem.QualifiedName, consIdentity)
+
+	// 检查是否已存在显式构造函数
+	if len(c.findDefinitionsByQN(fCtx, consQN)) == 0 {
+		fCtx.AddDefinition(&model.CodeElement{
+			Kind:          model.Method,
+			Name:          elem.Name,
+			QualifiedName: consQN,
+			Path:          fCtx.FilePath,
+			Location:      elem.Location,
+			Signature:     fmt.Sprintf("public %s(%s)", elem.Name, c.getNodeContent(paramList, *fCtx.SourceBytes)),
+			Extra:         &model.Extra{Mores: map[string]interface{}{MethodIsConstructor: true, MethodIsImplicit: true}},
+		}, elem.QualifiedName, node)
+	}
+}
+
+// ==========================================
+// 6. 辅助工具逻辑 (Helper Utilities)
 // ==========================================
 
 func (c *Collector) handleImport(node *sitter.Node, fCtx *core.FileContext) {
@@ -376,6 +560,7 @@ func (c *Collector) extractTypeString(node *sitter.Node, src *[]byte) string {
 	if tNode := node.ChildByFieldName("type"); tNode != nil {
 		return c.getNodeContent(tNode, *src)
 	}
+
 	if node.Kind() == "spread_parameter" {
 		for i := 0; i < int(node.NamedChildCount()); i++ {
 			child := node.NamedChild(uint(i))
@@ -384,6 +569,7 @@ func (c *Collector) extractTypeString(node *sitter.Node, src *[]byte) string {
 			}
 		}
 	}
+
 	return "unknown"
 }
 
@@ -595,4 +781,18 @@ func (c *Collector) contains(slice []string, item string) bool {
 		}
 	}
 	return false
+}
+
+func (c *Collector) findDefinitionsByQN(fCtx *core.FileContext, qn string) []*core.DefinitionEntry {
+	// 1. 先尝试直接从 QN 映射（如果你有这个 Map）
+	// 2. 如果没有，则扫描全集（虽然慢，但最准）
+	var result []*core.DefinitionEntry
+	for _, entries := range fCtx.DefinitionsBySN {
+		for _, entry := range entries {
+			if entry.Element.QualifiedName == qn {
+				result = append(result, entry)
+			}
+		}
+	}
+	return result
 }

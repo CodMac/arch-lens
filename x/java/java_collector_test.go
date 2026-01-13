@@ -1656,6 +1656,271 @@ func TestJavaCollector_ScopeAndShadowing(t *testing.T) {
 	})
 }
 
+func TestJavaCollector_SyntacticSugar_Step1(t *testing.T) {
+	// 1. 初始化解析环境
+	filePath := getTestFilePath(filepath.Join("com", "example", "sugar", "SugarClassTest.java"))
+	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, false, true)
+	if err != nil {
+		t.Fatalf("Failed to parse file: %v", err)
+	}
+
+	// 2. 执行 Collector (包含第4步：语法糖增强)
+	collector := java.NewJavaCollector()
+	fCtx, err := collector.CollectDefinitions(rootNode, filePath, sourceBytes)
+	if err != nil {
+		t.Fatalf("CollectDefinitions failed: %v", err)
+	}
+
+	printCodeElements(fCtx)
+
+	// --- 断言开始 ---
+
+	// 1. 验证默认构造函数补全
+	// 在测试代码中，直接检查 SN 映射
+	t.Run("Verify_Implicit_Default_Constructor", func(t *testing.T) {
+		shortName := "DefaultConstructor"
+		qn := "com.example.sugar.DefaultConstructor.DefaultConstructor()"
+
+		found := false
+		// 显式遍历 fCtx 的定义，不要信任外部封装的 find 函数
+		if entries, ok := fCtx.DefinitionsBySN[shortName]; ok {
+			for _, e := range entries {
+				if e.Element.QualifiedName == qn {
+					found = true
+					break
+				}
+			}
+		}
+		if !found {
+			t.Errorf("Default constructor NOT found in DefinitionsBySN. QN: %s", qn)
+		}
+	})
+
+	// 2. 验证 Enum 的自动方法 values()
+	t.Run("Verify Enum values() Method", func(t *testing.T) {
+		qn := "com.example.sugar.Color.values()"
+		defs := findDefinitionsByQN(fCtx, qn)
+
+		if len(defs) == 0 {
+			t.Fatalf("Implicit method values() not found for Enum Color")
+		}
+
+		elem := defs[0].Element
+		expectedSig := "public static Color[] values()"
+		if elem.Signature != expectedSig {
+			t.Errorf("Expected signature %s, got %s", expectedSig, elem.Signature)
+		}
+	})
+
+	// 3. 验证 Enum 的自动方法 valueOf(String)
+	t.Run("Verify Enum valueOf() Method", func(t *testing.T) {
+		qn := "com.example.sugar.Color.valueOf(String)"
+		defs := findDefinitionsByQN(fCtx, qn)
+
+		if len(defs) == 0 {
+			t.Fatalf("Implicit method valueOf(String) not found for Enum Color")
+		}
+
+		elem := defs[0].Element
+		expectedSig := "public static Color valueOf(String name)"
+		if elem.Signature != expectedSig {
+			t.Errorf("Expected signature %s, got %s", expectedSig, elem.Signature)
+		}
+	})
+
+	// 4. 验证原有的显式定义不受影响
+	t.Run("Verify Explicit Enum Constant Still Exists", func(t *testing.T) {
+		qn := "com.example.sugar.Color.RED"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("Explicit enum constant RED should still exist")
+		}
+		if isImplicit := defs[0].Element.Extra.Mores[java.MethodIsImplicit]; isImplicit != nil {
+			t.Errorf("Explicit constant RED should NOT be marked as implicit")
+		}
+	})
+}
+
+func TestJavaCollector_RecordSugar(t *testing.T) {
+	filePath := getTestFilePath(filepath.Join("com", "example", "sugar", "RecordTest.java"))
+	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, false, false)
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+
+	collector := java.NewJavaCollector()
+	fCtx, err := collector.CollectDefinitions(rootNode, filePath, sourceBytes)
+	if err != nil {
+		t.Fatalf("CollectDefinitions failed: %v", err)
+	}
+
+	printCodeElements(fCtx)
+
+	// 1. 验证隐式字段
+	t.Run("Verify Implicit Fields", func(t *testing.T) {
+		qn := "com.example.sugar.User.id"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 || defs[0].Element.Kind != model.Field {
+			t.Errorf("Implicit field 'id' not found or wrong kind")
+		}
+	})
+
+	// 2. 验证隐式 Accessor (id())
+	t.Run("Verify Implicit Accessor id()", func(t *testing.T) {
+		qn := "com.example.sugar.User.id()"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("Implicit accessor id() not found")
+		}
+		if sig := defs[0].Element.Signature; sig != "public Long id()" {
+			t.Errorf("Wrong signature for id(): %s", sig)
+		}
+	})
+
+	// 3. 验证显式覆盖的方法 (name())
+	t.Run("Verify Explicit Accessor name()", func(t *testing.T) {
+		qn := "com.example.sugar.User.name()"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("Method name() not found")
+		}
+
+		// 修正：在 Record 中，"name" 既是字段也是方法，所以 SN 列表长度应该是 2
+		// 我们应该验证：在该 SN 下，Method 类型的定义是否只有一个
+		methodCount := 0
+		var methodDef *model.CodeElement
+		for _, d := range fCtx.DefinitionsBySN["name"] {
+			if d.Element.Kind == model.Method {
+				methodCount++
+				methodDef = d.Element
+			}
+		}
+
+		if methodCount != 1 {
+			t.Errorf("Expected 1 method definition for name(), found %d", methodCount)
+		}
+
+		// 验证显式定义没有被标记为隐式
+		isImp, _ := methodDef.Extra.Mores[java.MethodIsImplicit].(bool)
+		if isImp {
+			t.Errorf("Explicitly defined method name() should NOT be marked as implicit")
+		}
+	})
+}
+
+func TestJavaCollector_TryWithResources(t *testing.T) {
+	filePath := getTestFilePath(filepath.Join("com", "example", "sugar", "TryWithResourcesTest.java"))
+	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, false, false)
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+
+	collector := java.NewJavaCollector()
+	fCtx, err := collector.CollectDefinitions(rootNode, filePath, sourceBytes)
+	if err != nil {
+		t.Fatalf("CollectDefinitions failed: %v", err)
+	}
+
+	printCodeElements(fCtx)
+
+	// 1. 验证标准资源定义 (input)
+	t.Run("Verify Single Resource Definition", func(t *testing.T) {
+		qn := "com.example.sugar.TryWithResourcesTest.test().input"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("Resource variable 'input' not found")
+		}
+
+		elem := defs[0].Element
+		if elem.Kind != model.Variable {
+			t.Errorf("Expected VARIABLE kind, got %s", elem.Kind)
+		}
+
+		// 检查元数据中的类型
+		vType, _ := elem.Extra.Mores[java.VariableType].(string)
+		if vType != "InputStream" {
+			t.Errorf("Expected type InputStream, got %s", vType)
+		}
+	})
+
+	// 2. 验证多个资源定义及其 QN 唯一性 (out, in)
+	t.Run("Verify Multiple Resources", func(t *testing.T) {
+		// 检查 out
+		qnOut := "com.example.sugar.TryWithResourcesTest.test().out"
+		if len(findDefinitionsByQN(fCtx, qnOut)) == 0 {
+			t.Errorf("Resource 'out' not found at %s", qnOut)
+		}
+
+		// 检查 in
+		qnIn := "com.example.sugar.TryWithResourcesTest.test().in"
+		if len(findDefinitionsByQN(fCtx, qnIn)) == 0 {
+			t.Errorf("Resource 'in' not found at %s", qnIn)
+		}
+	})
+
+	// 3. 验证元数据标记
+	t.Run("Verify Resource Metadata", func(t *testing.T) {
+		qn := "com.example.sugar.TryWithResourcesTest.test().input"
+		defs := findDefinitionsByQN(fCtx, qn)
+		elem := defs[0].Element
+
+		// Resource 变量不应该被误认为是方法参数
+		isParam, _ := elem.Extra.Mores[java.VariableIsParam].(bool)
+		if isParam {
+			t.Errorf("Resource variable should NOT be marked as Method Parameter")
+		}
+	})
+}
+
+func TestJavaCollector_Lambda(t *testing.T) {
+	filePath := getTestFilePath(filepath.Join("com", "example", "sugar", "LambdaTest.java"))
+	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, true, true)
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+
+	collector := java.NewJavaCollector()
+	fCtx, err := collector.CollectDefinitions(rootNode, filePath, sourceBytes)
+	if err != nil {
+		t.Fatalf("CollectDefinitions failed: %v", err)
+	}
+
+	printCodeElements(fCtx)
+
+	// 1. 验证隐式双参数 (a, b)
+	t.Run("Verify Inferred Lambda Parameters", func(t *testing.T) {
+		// QN 逻辑：方法名.lambda$序号.变量名
+		// 假设你的 applyUniqueQN 处理 lambda 为 lambda$1
+		qnA := "com.example.sugar.LambdaTest.testLambda().lambda$1.a"
+		qnB := "com.example.sugar.LambdaTest.testLambda().lambda$1.b"
+
+		if len(findDefinitionsByQN(fCtx, qnA)) == 0 {
+			t.Errorf("Lambda inferred parameter 'a' not found")
+		}
+
+		if len(findDefinitionsByQN(fCtx, qnB)) == 0 {
+			t.Errorf("Lambda inferred parameter 'b' not found")
+		}
+	})
+
+	// 2. 验证单参数省略括号 (s)
+	t.Run("Verify Single Lambda Parameter", func(t *testing.T) {
+		qnS := "com.example.sugar.LambdaTest.testLambda().lambda$2.s"
+		if len(findDefinitionsByQN(fCtx, qnS)) == 0 {
+			t.Errorf("Lambda single parameter 's' not found")
+		}
+	})
+
+	// 3. 验证 Lambda 内部的局部变量 (prefix)
+	t.Run("Verify Variable Inside Lambda Body", func(t *testing.T) {
+		qnPrefix := "com.example.sugar.LambdaTest.testLambda().lambda$2.prefix"
+		defs := findDefinitionsByQN(fCtx, qnPrefix)
+		if len(defs) == 0 {
+			t.Errorf("Variable 'prefix' inside lambda body not found")
+		}
+	})
+}
+
 // 辅助函数：根据 QN 在 fCtx 中查找定义
 func findDefinitionsByQN(fCtx *core.FileContext, targetQN string) []*core.DefinitionEntry {
 	var result []*core.DefinitionEntry
