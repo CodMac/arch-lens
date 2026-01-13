@@ -1647,9 +1647,8 @@ func TestJavaCollector_ScopeAndShadowing(t *testing.T) {
 
 	// 4. 验证 Lambda 表达式及其内部变量
 	t.Run("Verify Lambda Scope", func(t *testing.T) {
-		// 根据日志，Lambda 内部还有一个自动生成的 block$1
-		// QN: com.example.base.ScopeTest.test().lambda$1.block$1.x
-		lambdaVarQN := "com.example.base.ScopeTest.test().lambda$1.block$1.x"
+		// QN: com.example.base.ScopeTest.test().lambda$1.x
+		lambdaVarQN := "com.example.base.ScopeTest.test().lambda$1.x"
 		if len(findDefinitionsByQN(fCtx, lambdaVarQN)) == 0 {
 			t.Errorf("Variable x not found inside Lambda block scope")
 		}
