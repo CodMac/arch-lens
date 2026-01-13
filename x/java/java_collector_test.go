@@ -1920,6 +1920,120 @@ func TestJavaCollector_Lambda(t *testing.T) {
 	})
 }
 
+func TestJavaCollector_MethodReference(t *testing.T) {
+	// 1. 加载测试文件
+	filePath := getTestFilePath(filepath.Join("com", "example", "sugar", "MethodRefTest.java"))
+	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, true, true)
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+
+	// 2. 执行采集
+	collector := java.NewJavaCollector()
+	fCtx, err := collector.CollectDefinitions(rootNode, filePath, sourceBytes)
+	if err != nil {
+		t.Fatalf("CollectDefinitions failed: %v", err)
+	}
+
+	// 打印结果便于调试
+	printCodeElements(fCtx)
+
+	// 3. 定义全覆盖断言矩阵
+	const qnPrefix = "com.example.sugar.MethodRefTest.testAllMethodReferences()"
+
+	testCases := []struct {
+		name             string
+		expectedQN       string
+		expectedSig      string
+		expectedReceiver string // 新增：预期的 Receiver
+		expectedTarget   string // 新增：预期的 Target (方法名或 new)
+	}{
+		{
+			name:             "Static Method Reference",
+			expectedQN:       qnPrefix + ".method_ref$1",
+			expectedSig:      "Integer::parseInt",
+			expectedReceiver: "Integer",
+			expectedTarget:   "parseInt",
+		},
+		{
+			name:             "Bound Instance Method Reference",
+			expectedQN:       qnPrefix + ".method_ref$2",
+			expectedSig:      "System.out::println",
+			expectedReceiver: "System.out",
+			expectedTarget:   "println",
+		},
+		{
+			name:             "Arbitrary Instance Method Reference",
+			expectedQN:       qnPrefix + ".method_ref$3",
+			expectedSig:      "String::toLowerCase",
+			expectedReceiver: "String",
+			expectedTarget:   "toLowerCase",
+		},
+		{
+			name:             "Constructor Reference",
+			expectedQN:       qnPrefix + ".method_ref$4",
+			expectedSig:      "ArrayList::new",
+			expectedReceiver: "ArrayList",
+			expectedTarget:   "new",
+		},
+		{
+			name:             "Array Constructor Reference",
+			expectedQN:       qnPrefix + ".method_ref$5",
+			expectedSig:      "int[]::new",
+			expectedReceiver: "int[]",
+			expectedTarget:   "new",
+		},
+		{
+			name:             "Generic Method Reference",
+			expectedQN:       qnPrefix + ".method_ref$6",
+			expectedSig:      "this::<String>genericMethod",
+			expectedReceiver: "this",
+			expectedTarget:   "genericMethod",
+		},
+	}
+
+	// 4. 执行循环断言
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			defs := findDefinitionsByQN(fCtx, tc.expectedQN)
+
+			if len(defs) == 0 {
+				t.Errorf("Method reference definition not found: %s", tc.expectedQN)
+				return
+			}
+
+			entry := defs[0]
+			elem := entry.Element
+
+			// 验证 Kind
+			if elem.Kind != model.MethodRef {
+				t.Errorf("Kind mismatch: got %v, want %v", elem.Kind, model.MethodRef)
+			}
+
+			// 验证 Signature
+			if elem.Signature != tc.expectedSig {
+				t.Errorf("Signature mismatch: got %s, want %s", elem.Signature, tc.expectedSig)
+			}
+
+			// 5. 验证深度解析的元数据 (Mores)
+			if elem.Extra == nil || elem.Extra.Mores == nil {
+				t.Errorf("Extra.Mores is nil for %s", tc.name)
+				return
+			}
+
+			actualReceiver := elem.Extra.Mores[java.MethodRefReceiver]
+			actualTarget := elem.Extra.Mores[java.MethodRefTarget]
+
+			if actualReceiver != tc.expectedReceiver {
+				t.Errorf("Receiver mismatch: got %v, want %v", actualReceiver, tc.expectedReceiver)
+			}
+			if actualTarget != tc.expectedTarget {
+				t.Errorf("Target mismatch: got %v, want %v", actualTarget, tc.expectedTarget)
+			}
+		})
+	}
+}
+
 // 辅助函数：根据 QN 在 fCtx 中查找定义
 func findDefinitionsByQN(fCtx *core.FileContext, targetQN string) []*core.DefinitionEntry {
 	var result []*core.DefinitionEntry

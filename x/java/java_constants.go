@@ -25,5 +25,8 @@ const (
 	FieldIsFinal                   = "java.field.is_final"
 	FieldIsConstant                = "java.field.is_constant"
 	FieldIsRecordComponent         = "java.field.is_record_component"
+	MethodRefReceiver              = "java.method_ref.receiver" // 被引用的类或对象
+	MethodRefTarget                = "java.method_ref.target"   // 被引用的方法名
+	MethodRefTypeArgs              = "java.method_ref.type_arguments"
 	EnumArguments                  = "java.enum.arguments"
 )

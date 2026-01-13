@@ -118,6 +118,8 @@ func (c *Collector) identifyElement(node *sitter.Node, fCtx *core.FileContext, p
 		kind, name = model.Variable, c.getNodeContent(node.ChildByFieldName("name"), *fCtx.SourceBytes)
 	case "lambda_expression":
 		kind, name = model.Lambda, "lambda"
+	case "method_reference": // 方法引用
+		kind, name = model.MethodRef, "method_ref"
 	case "inferred_parameters":
 		return nil, "" // lambda参数容器节点，跳过并递归处理 identifier
 	case "identifier":
@@ -178,8 +180,11 @@ func (c *Collector) identifyBlockType(node *sitter.Node) (model.ElementKind, str
 		return model.ScopeBlock, "$instance"
 	}
 	// 排除已经拥有作用域名称的块，防止 QN 冗余
-	if pKind == "method_declaration" || pKind == "constructor_declaration" ||
-		pKind == "static_initializer" || pKind == "lambda_expression" {
+	if pKind == "method_declaration" ||
+		pKind == "constructor_declaration" ||
+		pKind == "static_initializer" ||
+		pKind == "lambda_expression" ||
+		pKind == "method_reference" {
 		return "", ""
 	}
 	return model.ScopeBlock, "block"
@@ -221,6 +226,14 @@ func (c *Collector) processMetadataForEntry(entry *core.DefinitionEntry, fCtx *c
 	case model.EnumConstant:
 		c.fillEnumConstantMetadata(node, extra, fCtx)
 		elem.Signature = elem.Name
+	case model.Lambda:
+		elem.Signature = "() -> {...}"
+	case model.MethodRef:
+		// 1. 设置原始签名 (如 System.out::println)
+		elem.Signature = c.getNodeContent(node, *fCtx.SourceBytes)
+
+		// 2. 深度解析被引用的目标
+		c.fillMethodReferenceDetails(elem, node, extra, fCtx)
 	case model.ScopeBlock:
 		c.fillScopeBlockMetadata(elem, node, extra)
 	}
@@ -331,6 +344,48 @@ func (c *Collector) fillScopeBlockMetadata(elem *model.CodeElement, node *sitter
 	elem.Signature = "{...}"
 	if isStatic {
 		elem.Signature = "static {...}"
+	}
+}
+
+func (c *Collector) fillMethodReferenceDetails(elem *model.CodeElement, node *sitter.Node, extra *model.Extra, fCtx *core.FileContext) {
+	var receiver, target string
+
+	for i := 0; i < int(node.ChildCount()); i++ {
+		child := node.Child(uint(i))
+		kind := child.Kind()
+
+		// 1. 忽略不需要的符号和中间件
+		if kind == "::" || kind == "type_arguments" {
+			if kind == "type_arguments" {
+				extra.Mores[MethodRefTypeArgs] = c.getNodeContent(child, *fCtx.SourceBytes)
+			}
+			continue
+		}
+
+		// 2. 识别内容
+		content := c.getNodeContent(child, *fCtx.SourceBytes)
+		if content == "" {
+			continue
+		}
+
+		// 逻辑：第一个非符号/非泛型节点是 Receiver，第二个是 Target
+		if receiver == "" {
+			receiver = content
+		} else if target == "" {
+			// 如果遇到了 new，说明是构造函数引用
+			if kind == "new" {
+				target = "new"
+			} else {
+				target = content
+			}
+		}
+	}
+
+	if receiver != "" {
+		extra.Mores[MethodRefReceiver] = receiver
+	}
+	if target != "" {
+		extra.Mores[MethodRefTarget] = target
 	}
 }
 
@@ -471,7 +526,7 @@ func (c *Collector) applyUniqueQN(elem *model.CodeElement, node *sitter.Node, pa
 		identity += c.extractParameterTypesOnly(node, src)
 	}
 
-	if elem.Kind == model.AnonymousClass || elem.Kind == model.Lambda || elem.Kind == model.ScopeBlock {
+	if elem.Kind == model.AnonymousClass || elem.Kind == model.Lambda || elem.Kind == model.ScopeBlock || elem.Kind == model.MethodRef {
 		occurrences[elem.Name]++
 		identity = fmt.Sprintf("%s$%d", elem.Name, occurrences[elem.Name])
 	} else {

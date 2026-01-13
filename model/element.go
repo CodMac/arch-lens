@@ -19,7 +19,8 @@ const (
 	EnumConstant    ElementKind = "ENUM_CONSTANT"    // 面向对象/复合类型    	-> 枚举常量
 	KAnnotation     ElementKind = "ANNOTATION"       // 面向对象/复合类型    	-> 注解 (Java, C++, Python, JS)
 	Trait           ElementKind = "TRAIT"            // 面向对象/复合类型    	-> 特质 (Rust, Scala)
-	Lambda          ElementKind = "LAMBDA"           // 可执行体    			-> Lambda 表达式, 匿名函数 (Go func(){})
+	Lambda          ElementKind = "LAMBDA"           // 可执行体    			-> Lambda 表达式 (Java)
+	MethodRef       ElementKind = "METHOD_REF"       // 可执行体    			-> 方法引用 (Java)
 	ScopeBlock      ElementKind = "SCOPE_BLOCK"      // 可执行体    			-> 代码块 (用于分析局部变量作用域)
 	Function        ElementKind = "FUNCTION"         // 可执行体  	     	-> 独立函数 (C, Go, JS)
 	Method          ElementKind = "METHOD"           // 可执行体       		-> 类/结构体的方法
