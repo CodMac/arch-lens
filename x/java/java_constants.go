@@ -32,3 +32,8 @@ const (
 	LambdaParameters               = "java.lambda.parameters" //参数列表字符串
 	LambdaBodyIsBlock              = "java.lambda.is_block"   //Body是否为代码块{...}
 )
+
+const (
+	RelRawText = "java.rel.raw_text"
+	RelContext = "java.rel.ast_kind"
+)
