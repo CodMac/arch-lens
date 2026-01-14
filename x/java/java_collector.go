@@ -120,8 +120,6 @@ func (c *Collector) identifyElement(node *sitter.Node, fCtx *core.FileContext, p
 		kind, name = model.Lambda, "lambda"
 	case "method_reference": // 方法引用
 		kind, name = model.MethodRef, "method_ref"
-	case "inferred_parameters":
-		return nil, "" // lambda参数容器节点，跳过并递归处理 identifier
 	case "identifier":
 		if k, n := c.identifyLambdaParameter(node, fCtx); k != "" {
 			kind, name = k, n
@@ -227,7 +225,7 @@ func (c *Collector) processMetadataForEntry(entry *core.DefinitionEntry, fCtx *c
 		c.fillEnumConstantMetadata(node, extra, fCtx)
 		elem.Signature = elem.Name
 	case model.Lambda:
-		elem.Signature = "() -> {...}"
+		c.fillLambdaMetadata(elem, node, extra, fCtx)
 	case model.MethodRef:
 		// 1. 设置原始签名 (如 System.out::println)
 		elem.Signature = c.getNodeContent(node, *fCtx.SourceBytes)
@@ -386,6 +384,38 @@ func (c *Collector) fillMethodReferenceDetails(elem *model.CodeElement, node *si
 	}
 	if target != "" {
 		extra.Mores[MethodRefTarget] = target
+	}
+}
+
+func (c *Collector) fillLambdaMetadata(elem *model.CodeElement, node *sitter.Node, extra *model.Extra, fCtx *core.FileContext) {
+	// 1. 提取参数部分
+	// Lambda 参数可能是: (a, b) -> ... 或 a -> ... 或 (int a) -> ...
+	var paramsStr string
+	paramNode := node.ChildByFieldName("parameters")
+	if paramNode != nil {
+		paramsStr = c.getNodeContent(paramNode, *fCtx.SourceBytes)
+	} else {
+		// 处理单参数没有括号的情况: s -> s.toLowerCase()
+		// 在 tree-sitter-java 中，这种 identifier 会是 lambda_expression 的第一个命名子节点
+		if firstChild := node.NamedChild(0); firstChild != nil && firstChild.Kind() == "identifier" {
+			paramsStr = c.getNodeContent(firstChild, *fCtx.SourceBytes)
+		}
+	}
+	extra.Mores[LambdaParameters] = paramsStr
+
+	// 2. 识别 Body 类型
+	// body 可能是 block 或 表达式
+	bodyNode := node.ChildByFieldName("body")
+	if bodyNode != nil {
+		isBlock := bodyNode.Kind() == "block"
+		extra.Mores[LambdaBodyIsBlock] = isBlock
+
+		// 生成更具描述性的 Signature，例如 (s) -> { ... } 或 (a, b) -> expr
+		bodyType := "expr"
+		if isBlock {
+			bodyType = "{...}"
+		}
+		elem.Signature = fmt.Sprintf("%s -> %s", paramsStr, bodyType)
 	}
 }
 

@@ -1873,7 +1873,7 @@ func TestJavaCollector_TryWithResources(t *testing.T) {
 
 func TestJavaCollector_Lambda(t *testing.T) {
 	filePath := getTestFilePath(filepath.Join("com", "example", "sugar", "LambdaTest.java"))
-	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, true, true)
+	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, false, true)
 	if err != nil {
 		t.Fatalf("Parse error: %v", err)
 	}
@@ -1886,36 +1886,92 @@ func TestJavaCollector_Lambda(t *testing.T) {
 
 	printCodeElements(fCtx)
 
-	// 1. 验证隐式双参数 (a, b)
-	t.Run("Verify Inferred Lambda Parameters", func(t *testing.T) {
-		// QN 逻辑：方法名.lambda$序号.变量名
-		// 假设你的 applyUniqueQN 处理 lambda 为 lambda$1
-		qnA := "com.example.sugar.LambdaTest.testLambda().lambda$1.a"
-		qnB := "com.example.sugar.LambdaTest.testLambda().lambda$1.b"
+	const qnPrefix = "com.example.sugar.LambdaTest.testLambda()"
 
-		if len(findDefinitionsByQN(fCtx, qnA)) == 0 {
-			t.Errorf("Lambda inferred parameter 'a' not found")
+	// 1. 验证 Lambda 自身的元数据与 Signature
+	t.Run("Verify Lambda Metadata", func(t *testing.T) {
+		testCases := []struct {
+			name            string
+			qn              string
+			expectedSig     string
+			expectedParams  string
+			expectedIsBlock bool
+		}{
+			{
+				name:            "Inferred Multi-params",
+				qn:              qnPrefix + ".lambda$1",
+				expectedSig:     "(a, b) -> expr",
+				expectedParams:  "(a, b)",
+				expectedIsBlock: false,
+			},
+			{
+				name:            "Single Param No Paren",
+				qn:              qnPrefix + ".lambda$2",
+				expectedSig:     "s -> {...}",
+				expectedParams:  "s",
+				expectedIsBlock: true,
+			},
 		}
 
-		if len(findDefinitionsByQN(fCtx, qnB)) == 0 {
-			t.Errorf("Lambda inferred parameter 'b' not found")
+		for _, tc := range testCases {
+			t.Run(tc.name, func(t *testing.T) {
+				defs := findDefinitionsByQN(fCtx, tc.qn)
+				if len(defs) == 0 {
+					t.Fatalf("Lambda %s not found", tc.qn)
+				}
+				elem := defs[0].Element
+
+				// 验证 Signature
+				if elem.Signature != tc.expectedSig {
+					t.Errorf("Signature mismatch: got %v, want %v", elem.Signature, tc.expectedSig)
+				}
+
+				// 验证深度解析元数据
+				mores := elem.Extra.Mores
+				if mores[java.LambdaParameters] != tc.expectedParams {
+					t.Errorf("Params mismatch: got %v, want %v", mores[java.LambdaParameters], tc.expectedParams)
+				}
+				if mores[java.LambdaBodyIsBlock] != tc.expectedIsBlock {
+					t.Errorf("IsBlock mismatch: got %v, want %v", mores[java.LambdaBodyIsBlock], tc.expectedIsBlock)
+				}
+			})
 		}
 	})
 
-	// 2. 验证单参数省略括号 (s)
-	t.Run("Verify Single Lambda Parameter", func(t *testing.T) {
-		qnS := "com.example.sugar.LambdaTest.testLambda().lambda$2.s"
-		if len(findDefinitionsByQN(fCtx, qnS)) == 0 {
-			t.Errorf("Lambda single parameter 's' not found")
+	// 2. 验证 Lambda 参数变量 (归属于 lambda$n 作用域)
+	t.Run("Verify Lambda Parameter Variables", func(t *testing.T) {
+		paramVariables := []string{
+			qnPrefix + ".lambda$1.a",
+			qnPrefix + ".lambda$1.b",
+			qnPrefix + ".lambda$2.s",
+		}
+
+		for _, qn := range paramVariables {
+			defs := findDefinitionsByQN(fCtx, qn)
+			if len(defs) == 0 {
+				t.Errorf("Lambda parameter variable not found: %s", qn)
+			} else {
+				// 验证 Kind 必须是 Variable
+				if defs[0].Element.Kind != model.Variable {
+					t.Errorf("Kind mismatch for %s: got %v", qn, defs[0].Element.Kind)
+				}
+			}
 		}
 	})
 
 	// 3. 验证 Lambda 内部的局部变量 (prefix)
 	t.Run("Verify Variable Inside Lambda Body", func(t *testing.T) {
-		qnPrefix := "com.example.sugar.LambdaTest.testLambda().lambda$2.prefix"
-		defs := findDefinitionsByQN(fCtx, qnPrefix)
+		qnVar := qnPrefix + ".lambda$2.prefix"
+		defs := findDefinitionsByQN(fCtx, qnVar)
 		if len(defs) == 0 {
-			t.Errorf("Variable 'prefix' inside lambda body not found")
+			t.Errorf("Variable 'prefix' inside lambda body not found: %s", qnVar)
+			return
+		}
+
+		// 验证它确实被标记为 Lambda 作用域内的变量
+		elem := defs[0].Element
+		if elem.Name != "prefix" {
+			t.Errorf("Name mismatch: got %v", elem.Name)
 		}
 	})
 }
@@ -1923,7 +1979,7 @@ func TestJavaCollector_Lambda(t *testing.T) {
 func TestJavaCollector_MethodReference(t *testing.T) {
 	// 1. 加载测试文件
 	filePath := getTestFilePath(filepath.Join("com", "example", "sugar", "MethodRefTest.java"))
-	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, true, true)
+	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, false, true)
 	if err != nil {
 		t.Fatalf("Parse error: %v", err)
 	}

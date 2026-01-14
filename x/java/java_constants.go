@@ -29,4 +29,6 @@ const (
 	MethodRefTarget                = "java.method_ref.target"   // 被引用的方法名
 	MethodRefTypeArgs              = "java.method_ref.type_arguments"
 	EnumArguments                  = "java.enum.arguments"
+	LambdaParameters               = "java.lambda.parameters" //参数列表字符串
+	LambdaBodyIsBlock              = "java.lambda.is_block"   //Body是否为代码块{...}
 )
