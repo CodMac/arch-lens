@@ -9,68 +9,108 @@ public class CallRelationSuite extends BaseClass {
     private static String staticField = "test";
 
     public void executeAll() {
-        // 1. 基础实例调用 (Local Instance Call)
+        // 1. 基础实例调用
         // Source: Method(executeAll), Target: Method(simpleMethod)
-        // Mores: { "java.rel.receiver": "this", "java.rel.raw_text": "simpleMethod()" }
+        // Mores: {
+        //   "java.rel.call.receiver": "this",
+        //   "java.rel.call.is_static": false,
+        //   "java.rel.ast_kind": "method_invocation",
+        //   "java.rel.raw_text": "simpleMethod()"
+        // }
         simpleMethod();
 
-        // 2. 静态方法调用 (Static Call)
+        // 2. 静态方法调用
         // Source: Method(executeAll), Target: Method(staticMethod)
-        // Mores: { "java.rel.is_static": true, "java.rel.receiver_type": "CallRelationSuite" }
+        // Mores: {
+        //   "java.rel.call.is_static": true,
+        //   "java.rel.call.receiver_type": "CallRelationSuite",
+        //   "java.rel.ast_kind": "method_invocation"
+        // }
         CallRelationSuite.staticMethod();
 
-        // 3. 跨包静态调用 (Cross-package Static Call)
+        // 3. 跨包静态调用
         // Source: Method(executeAll), Target: Method(currentTimeMillis)
-        // Mores: { "java.rel.receiver_type": "java.lang.System", "java.rel.ast_kind": "method_invocation" }
+        // Mores: {
+        //   "java.rel.call.receiver_type": "java.lang.System",
+        //   "java.rel.ast_kind": "method_invocation"
+        // }
         System.currentTimeMillis();
 
         // 4. 链式调用 (Chained Call)
         // Source: Method(executeAll), Target: Method(add)
-        // Mores: { "java.rel.receiver_expression": "getList()", "java.rel.ast_kind": "method_invocation" }
+        // Mores: {
+        //   "java.rel.call.receiver_expression": "getList()",
+        //   "java.rel.call.is_chained": true,
+        //   "java.rel.ast_kind": "method_invocation"
+        // }
         // 注意：这里还会触发一个 [executeAll -> getList] 的 CALL 关系
         getList().add("item");
 
-        // 5. 显式继承调用 (Explicit Super Call)
+        // 5. 显式继承调用
         // Source: Method(executeAll), Target: Method(BaseClass.baseMethod)
-        // Mores: { "java.rel.receiver": "super", "java.rel.raw_text": "super.baseMethod()" }
+        // Mores: {
+        //   "java.rel.call.receiver": "super",
+        //   "java.rel.call.is_inherited": true,
+        //   "java.rel.raw_text": "super.baseMethod()"
+        // }
         super.baseMethod();
 
-        // 6. 隐式继承调用 (Implicit Super Call)
+        // 6. 隐式继承调用
         // Source: Method(executeAll), Target: Method(BaseClass.baseMethod)
-        // Mores: { "java.rel.receiver": "this", "java.rel.is_inherited": true }
+        // Mores: {
+        //   "java.rel.call.receiver": "this",
+        //   "java.rel.call.is_inherited": true
+        // }
         baseMethod();
 
-        // 7. 构造函数调用 (Constructor Call / CREATE)
+        // 7. 对象创建 (Constructor Call)
         // Source: Method(executeAll), Target: Class(ArrayList)
-        // Mores: { "java.rel.ast_kind": "object_creation_expression", "java.rel.is_generic": true }
+        // Mores: {
+        //   "java.rel.ast_kind": "object_creation_expression",
+        //   "java.rel.call.type_arguments": "String",
+        //   "java.rel.call.is_constructor": true
+        // }
         List<String> list = new ArrayList<>();
 
-        // 8. Lambda 内部的方法调用 (Call within Lambda)
+        // 8. Lambda 内部的方法调用
         // Source: LambdaSymbol(s -> ...), Target: Method(simpleMethod)
-        // Mores: { "java.rel.enclosing_method": "executeAll", "java.rel.ast_kind": "method_invocation" }
+        // Mores: {
+        //   "java.rel.call.enclosing_method": "executeAll",
+        //   "java.rel.ast_kind": "method_invocation"
+        // }
         Consumer<String> consumer = (s) -> {
             simpleMethod();
-            // 同时触发 CAPTURE 关系: [Lambda -> Field(staticField)]
             System.out.println(s + staticField);
         };
 
         // 9. 方法引用 (Method Reference)
         // Source: Method(executeAll), Target: Method(simpleMethod)
-        // Mores: { "java.rel.ast_kind": "method_reference", "java.rel.receiver": "this" }
+        // Mores: {
+        //   "java.rel.ast_kind": "method_reference",
+        //   "java.rel.call.receiver": "this",
+        //   "java.rel.call.is_functional": true
+        // }
         List.of("A").forEach(this::simpleMethod);
 
-        // 10. 泛型方法显式调用 (Generic Method Call)
+        // 10. 泛型方法显式调用
         // Source: Method(executeAll), Target: Method(genericMethod)
-        // Mores: { "java.rel.type_arguments": "String", "java.rel.raw_text": "this.<String>genericMethod(\"hello\")" }
+        // Mores: {
+        //   "java.rel.call.type_arguments": "String",
+        //   "java.rel.raw_text": "this.<String>genericMethod(\"hello\")"
+        // }
         this.<String>genericMethod("hello");
 
-        // 11. 匿名内部类调用 (Anonymous Inner Class Call)
+        // 11. 匿名内部类调用
         // Source: AnonymousClassSymbol, Target: Method(run)
-        // Mores: { "java.rel.ast_kind": "method_invocation", "java.rel.parent_type": "Runnable" }
+        // Mores: {
+        //   "java.rel.ast_kind": "method_invocation",
+        //   "java.rel.type_arg.parent_type": "Runnable"
+        // }
         new Runnable() {
             @Override
             public void run() {
                 // Source: Method(run), Target: Method(simpleMethod)
+                // Mores: { "java.rel.call.receiver": "CallRelationSuite.this" }
                 simpleMethod();
             }
         }.run();
@@ -84,13 +124,15 @@ public class CallRelationSuite extends BaseClass {
 
     class SubClass {
         SubClass() {
+            // 12. 显式构造函数调用 (Super)
             // Source: Constructor(SubClass), Target: Constructor(BaseClass)
-            // Mores: { "java.rel.ast_kind": "explicit_constructor_invocation", "java.rel.receiver": "super" }
+            // Mores: { "java.rel.ast_kind": "explicit_constructor_invocation", "java.rel.call.receiver": "super" }
             super();
         }
         SubClass(String data) {
+            // 13. 显式构造函数调用 (This)
             // Source: Constructor(SubClass), Target: Constructor(SubClass)
-            // Mores: { "java.rel.ast_kind": "explicit_constructor_invocation", "java.rel.receiver": "this" }
+            // Mores: { "java.rel.ast_kind": "explicit_constructor_invocation", "java.rel.call.receiver": "this" }
             this();
         }
     }
