@@ -43,7 +43,7 @@ const (
 // --- 通用属性 (Global Relations) ---
 const (
 	RelRawText   = "java.rel.raw_text"
-	RelASTKind   = "java.rel.ast_kind"
+	RelAstKind   = "java.rel.ast_kind"
 	RelParentAST = "java.rel.parent_ast"
 	RelContext   = "java.rel.context"
 )
