@@ -6,7 +6,6 @@ import java.lang.annotation.*;
 // Source: Class(AnnotationRelationSuite), Target: Class(Entity)
 // Mores: {
 //   "java.rel.annotation.target": "TYPE",
-//   "java.rel.ast_kind": "marker_annotation",
 //   "java.rel.raw_text": "@Entity"
 // }
 @Entity
@@ -15,7 +14,6 @@ import java.lang.annotation.*;
 // Mores: {
 //   "java.rel.annotation.target": "TYPE",
 //   "java.rel.annotation.value": "\"all\"",
-//   "java.rel.ast_kind": "single_element_annotation",
 //   "java.rel.raw_text": "@SuppressWarnings(\"all\")"
 // }
 @SuppressWarnings("all")
@@ -25,7 +23,6 @@ public class AnnotationRelationSuite {
     // Source: Field(id), Target: Class(Id)
     // Mores: {
     //   "java.rel.annotation.target": "FIELD",
-    //   "java.rel.ast_kind": "marker_annotation"
     // }
     @Id
     // 2.1 字段注解 - 多参数 (Normal Annotation)
@@ -33,7 +30,6 @@ public class AnnotationRelationSuite {
     // Mores: {
     //   "java.rel.annotation.target": "FIELD",
     //   "java.rel.annotation.params": "name=\"user_id\",nullable=false",
-    //   "java.rel.ast_kind": "normal_annotation",
     //   "java.rel.raw_text": "@Column(name = \"user_id\", nullable = false)"
     // }
     @Column(name = "user_id", nullable = false)
@@ -44,7 +40,6 @@ public class AnnotationRelationSuite {
     // Mores: {
     //   "java.rel.annotation.target": "METHOD",
     //   "java.rel.annotation.params": "timeout=100",
-    //   "java.rel.ast_kind": "normal_annotation"
     // }
     @Transactional(timeout = 100)
     // 3.1 参数注解
@@ -52,7 +47,6 @@ public class AnnotationRelationSuite {
     // Mores: {
     //   "java.rel.annotation.target": "PARAMETER",
     //   "java.rel.parameter.name": "data",
-    //   "java.rel.ast_kind": "marker_annotation"
     // }
     public void save(@NotNull String data) {
 
@@ -60,7 +54,6 @@ public class AnnotationRelationSuite {
         // Source: Variable(local), Target: Class(NonEmpty)
         // Mores: {
         //   "java.rel.annotation.target": "LOCAL_VARIABLE",
-        //   "java.rel.ast_kind": "marker_annotation"
         // }
         @NonEmpty String local = data;
     }

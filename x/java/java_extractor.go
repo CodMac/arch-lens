@@ -114,16 +114,12 @@ func (e *Extractor) extractStructuralRelations(fCtx *core.FileContext, gCtx *cor
 			}
 			mores := elem.Extra.Mores
 
-			// ANNOTATION
-			for _, anno := range elem.Extra.Annotations {
-				rels = append(rels, &model.DependencyRelation{
-					Type:   model.Annotation,
-					Source: elem,
-					Target: e.quickResolve(e.clean(anno), model.KAnnotation, gCtx, fCtx),
-				})
+			// 1. ANNOTATION (独立重构函数，处理类、方法、字段、参数上的所有注解)
+			for _, annoStr := range elem.Extra.Annotations {
+				rels = append(rels, e.createAnnotationRelation(elem, annoStr, fCtx, gCtx))
 			}
 
-			// EXTEND & IMPLEMENT & OVERRIDE
+			// 2. EXTEND & IMPLEMENT & OVERRIDE
 			if sc, ok := mores[ClassSuperClass].(string); ok && sc != "" {
 				rels = append(rels, &model.DependencyRelation{
 					Type:   model.Extend,
@@ -135,7 +131,7 @@ func (e *Extractor) extractStructuralRelations(fCtx *core.FileContext, gCtx *cor
 				for _, iface := range ifaces {
 					relType := model.Implement
 					if elem.Kind == model.Interface {
-						relType = model.Extend // 接口之间是 Extend
+						relType = model.Extend
 					}
 					rels = append(rels, &model.DependencyRelation{
 						Type:   relType,
@@ -145,7 +141,7 @@ func (e *Extractor) extractStructuralRelations(fCtx *core.FileContext, gCtx *cor
 				}
 			}
 
-			// 方法签名 (RETURN, PARAMETER, THROW)
+			// 3. 方法签名 (RETURN, PARAMETER, THROW)
 			if ret, ok := mores[MethodReturnType].(string); ok && ret != "void" {
 				rels = append(rels, &model.DependencyRelation{
 					Type:   model.Return,
@@ -153,17 +149,31 @@ func (e *Extractor) extractStructuralRelations(fCtx *core.FileContext, gCtx *cor
 					Target: e.quickResolve(e.clean(ret), model.Type, gCtx, fCtx),
 				})
 			}
+
+			// 修改：针对 PARAMETER 的处理，剥离注解干扰
 			if params, ok := mores[MethodParameters].([]string); ok {
 				for _, p := range params {
-					// 提取参数类型部分
-					typeName := strings.Fields(p)[0]
-					rels = append(rels, &model.DependencyRelation{
-						Type:   model.Parameter,
-						Source: elem,
-						Target: e.quickResolve(e.clean(typeName), model.Type, gCtx, fCtx),
-					})
+					// 方案：从 Collector 存入的 "@NotNull String data" 中提取纯净类型名
+					// 逻辑：过滤掉所有 @ 开头的单词，取第一个非 @ 的单词作为 Type
+					parts := strings.Fields(p)
+					var pureType string
+					for _, part := range parts {
+						if !strings.HasPrefix(part, "@") {
+							pureType = part
+							break
+						}
+					}
+
+					if pureType != "" {
+						rels = append(rels, &model.DependencyRelation{
+							Type:   model.Parameter,
+							Source: elem,
+							Target: e.quickResolve(e.clean(pureType), model.Type, gCtx, fCtx),
+						})
+					}
 				}
 			}
+
 			if throws, ok := mores[MethodThrowsTypes].([]string); ok {
 				for _, t := range throws {
 					rels = append(rels, &model.DependencyRelation{
@@ -174,7 +184,7 @@ func (e *Extractor) extractStructuralRelations(fCtx *core.FileContext, gCtx *cor
 				}
 			}
 
-			// 泛型 TypeArg 提取 (基于变量或方法返回值的原始签名)
+			// 4. 泛型 TypeArg 提取
 			rawTypes := []string{}
 			if rt, ok := mores[MethodReturnType].(string); ok {
 				rawTypes = append(rawTypes, rt)
@@ -197,7 +207,6 @@ func (e *Extractor) extractStructuralRelations(fCtx *core.FileContext, gCtx *cor
 			}
 		}
 	}
-
 	return rels
 }
 
@@ -262,6 +271,58 @@ func (e *Extractor) extractActionRelations(fCtx *core.FileContext, gCtx *core.Gl
 }
 
 // --- 辅助逻辑 ---
+
+func (e *Extractor) createAnnotationRelation(source *model.CodeElement, rawAnno string, fCtx *core.FileContext, gCtx *core.GlobalContext) *model.DependencyRelation {
+	// 1. 解析字符串提取 Name 和初始 Mores
+	targetName, mores := e.parseAnnotationString(rawAnno)
+
+	// 2. 填充 Target 类型 (基于我们分析的 Collector 标识)
+	mores[RelAnnotationTarget] = e.determineAnnotationTarget(source)
+
+	return &model.DependencyRelation{
+		Type:   model.Annotation,
+		Source: source,
+		Target: e.quickResolve(targetName, model.KAnnotation, gCtx, fCtx),
+		Mores:  mores,
+	}
+}
+
+func (e *Extractor) parseAnnotationString(raw string) (string, map[string]interface{}) {
+	mores := make(map[string]interface{})
+	mores[RelRawText] = raw
+
+	content := strings.TrimPrefix(raw, "@")
+	if idx := strings.Index(content, "("); idx != -1 {
+		name := content[:idx]
+		params := content[idx+1 : strings.LastIndex(content, ")")]
+
+		if strings.Contains(params, "=") {
+			mores[RelAnnotationParams] = params
+		} else {
+			mores[RelAnnotationValue] = params
+		}
+		return name, mores
+	}
+	return content, mores
+}
+
+func (e *Extractor) determineAnnotationTarget(elem *model.CodeElement) string {
+	switch elem.Kind {
+	case model.Class, model.Interface, model.Enum:
+		return "TYPE"
+	case model.Field:
+		return "FIELD"
+	case model.Method:
+		return "METHOD"
+	case model.Variable:
+		// 关键：利用 Collector 填充的 VariableIsParam 判定
+		if isParam, _ := elem.Extra.Mores[VariableIsParam].(bool); isParam {
+			return "PARAMETER"
+		}
+		return "LOCAL_VARIABLE"
+	}
+	return "UNKNOWN"
+}
 
 func (e *Extractor) extractTypeArgs(signature string) []string {
 	match := genericRegex.FindStringSubmatch(signature)
