@@ -42,10 +42,10 @@ const (
 
 // --- 通用属性 (Global Relations) ---
 const (
-	RelRawText   = "java.rel.raw_text"
-	RelAstKind   = "java.rel.ast_kind"
-	RelParentAST = "java.rel.parent_ast"
-	RelContext   = "java.rel.context"
+	RelRawText   = "java.rel.raw_text"   // 完整的赋值语句源码 (eg,: data.name = "Hi")
+	RelAstKind   = "java.rel.ast_kind"   // 最小触发单元的节点类型 (触发该关系的那个 AST 节点的类型, eg,: assignment_expression)
+	RelParentAST = "java.rel.parent_ast" //
+	RelContext   = "java.rel.context"    // 所属的语句块类型 (该动作发生的大环境或语句容器, eg,: expression_statement 或 method_declaration)
 )
 
 // --- CALL 关系专用 (java.rel.call) ---
@@ -66,6 +66,7 @@ const (
 const (
 	RelAssignOperator        = "java.rel.assign.operator"          // 赋值运算符，如 "=", "+=", "++"
 	RelAssignValueExpression = "java.rel.assign.value_expression"  // 赋值语句右侧的原始表达式文本
+	RelAssignTargetName      = "java.rel.assign.target_name"       // 赋值语句目标 (谁被改变了)
 	RelAssignIsInitializer   = "java.rel.assign.is_initializer"    // 是否为声明时的初始化赋值 (如 int i = 0)
 	RelAssignIsCompound      = "java.rel.assign.is_compound"       // 是否为复合赋值 (如 +=, -=)
 	RelAssignIsChained       = "java.rel.assign.is_chained"        // 是否为链式连续赋值 (如 a = b = c = 1)

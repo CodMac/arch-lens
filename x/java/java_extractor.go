@@ -243,7 +243,7 @@ func (e *Extractor) extractActionRelations(fCtx *core.FileContext, gCtx *core.Gl
 
 			// 【关键修复 1】：每一条 Relation 必须拥有独立的 Mores，防止 Map 指针污染
 			mores := make(map[string]interface{})
-			mores[RelRawText] = rawText
+			mores[RelRawText] = stmtNode.Utf8Text(*fCtx.SourceBytes)
 			mores[RelContext] = stmtNode.Kind()
 
 			rel := &model.DependencyRelation{
@@ -273,11 +273,14 @@ func (e *Extractor) extractActionRelations(fCtx *core.FileContext, gCtx *core.Gl
 
 // enrichAssignMetadata 处理赋值相关的细节信息
 func (e *Extractor) enrichAssignMetadata(rel *model.DependencyRelation, capNode *sitter.Node, fCtx *core.FileContext) {
-	// 向上寻找最近的赋值或声明节点
+	// 记录谁被改变了 (java.rel.assign.target_name)
+	rel.Mores[RelAssignTargetName] = capNode.Utf8Text(*fCtx.SourceBytes)
+
+	// 向上寻找最近的赋值、声明或更新节点
 	for curr := capNode; curr != nil; curr = curr.Parent() {
 		kind := curr.Kind()
 
-		// 1. 静态上下文检查
+		// 静态上下文检查
 		if strings.Contains(rel.Source.QualifiedName, "$static$") {
 			rel.Mores[RelAssignIsStaticContext] = true
 		}
@@ -285,6 +288,8 @@ func (e *Extractor) enrichAssignMetadata(rel *model.DependencyRelation, capNode 
 		switch kind {
 		case "assignment_expression":
 			rel.Mores[RelAstKind] = kind
+
+			// 1. 提取操作符和复合赋值判断
 			if opNode := curr.ChildByFieldName("operator"); opNode != nil {
 				op := opNode.Utf8Text(*fCtx.SourceBytes)
 				rel.Mores[RelAssignOperator] = op
@@ -292,20 +297,30 @@ func (e *Extractor) enrichAssignMetadata(rel *model.DependencyRelation, capNode 
 					rel.Mores[RelAssignIsCompound] = true
 				}
 			}
-			if right := curr.ChildByFieldName("right"); right != nil {
+
+			// 2. 提取右值
+			right := curr.ChildByFieldName("right")
+			if right != nil {
 				rel.Mores[RelAssignValueExpression] = right.Utf8Text(*fCtx.SourceBytes)
-			}
-			// 处理 Receiver (this.count)
-			left := curr.ChildByFieldName("left")
-			if left != nil && left.Kind() == "field_access" {
-				if obj := left.ChildByFieldName("object"); obj != nil {
-					rel.Mores[RelCallReceiver] = obj.Utf8Text(*fCtx.SourceBytes)
+
+				// --- 核心逻辑：判断是否为链式连续赋值 (RelAssignIsChained) ---
+				// 如果右值节点本身也是一个赋值表达式，说明是 a = (b = c = 1) 结构
+				if right.Kind() == "assignment_expression" {
+					rel.Mores[RelAssignIsChained] = true
 				}
 			}
-			// 处理数组索引 (arr[0])
-			if left != nil && left.Kind() == "array_access" {
-				if idx := left.ChildByFieldName("index"); idx != nil {
-					rel.Mores[RelAssignIndexExpression] = idx.Utf8Text(*fCtx.SourceBytes)
+
+			// 3. 处理左值的特殊结构 (Receiver 和 Index)
+			left := curr.ChildByFieldName("left")
+			if left != nil {
+				if left.Kind() == "field_access" {
+					if obj := left.ChildByFieldName("object"); obj != nil {
+						rel.Mores[RelCallReceiver] = obj.Utf8Text(*fCtx.SourceBytes)
+					}
+				} else if left.Kind() == "array_access" {
+					if idx := left.ChildByFieldName("index"); idx != nil {
+						rel.Mores[RelAssignIndexExpression] = idx.Utf8Text(*fCtx.SourceBytes)
+					}
 				}
 			}
 			return
@@ -322,22 +337,28 @@ func (e *Extractor) enrichAssignMetadata(rel *model.DependencyRelation, capNode 
 		case "update_expression":
 			rel.Mores[RelAstKind] = kind
 			raw := curr.Utf8Text(*fCtx.SourceBytes)
+
+			// 提取操作符
 			if strings.Contains(raw, "++") {
 				rel.Mores[RelAssignOperator] = "++"
 			} else {
 				rel.Mores[RelAssignOperator] = "--"
 			}
+
+			// --- 核心逻辑：判断是否为后置更新 (RelAssignIsPostfix) ---
+			// 简单的判断方法：如果字符串末尾是操作符，则是后置 (如 i++)
+			if strings.HasSuffix(raw, "++") || strings.HasSuffix(raw, "--") {
+				rel.Mores[RelAssignIsPostfix] = true
+			}
 			return
 		}
 
-		// 如果到了表达式语句这一层还没找到，说明该 target 不在赋值结构中
+		// 提前跳出循环，避免无效向上回溯
 		if kind == "expression_statement" || kind == "local_variable_declaration" {
 			break
 		}
 	}
 }
-
-// --- 辅助逻辑 (保留你代码中的所有原始逻辑，并增强了 Source 定位) ---
 
 func (e *Extractor) determinePreciseSource(n *sitter.Node, fCtx *core.FileContext, gCtx *core.GlobalContext) *model.CodeElement {
 	for curr := n.Parent(); curr != nil; curr = curr.Parent() {

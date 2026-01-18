@@ -267,6 +267,87 @@ func TestJavaExtractor_Assign(t *testing.T) {
 	}
 }
 
+func TestJavaExtractor_ClassAssign(t *testing.T) {
+	testFile := "testdata/com/example/rel/AssignRelationForClassSuite.java"
+	files := []string{testFile}
+
+	gCtx := runPhase1Collection(t, files)
+	extractor := java.NewJavaExtractor()
+	allRelations, err := extractor.Extract(testFile, gCtx)
+	if err != nil {
+		t.Fatalf("Extraction failed: %v", err)
+	}
+
+	printRelations(allRelations)
+
+	expectedRels := []struct {
+		sourceQN   string
+		targetQN   string
+		matchMores func(m map[string]interface{}) bool
+		checkMores func(t *testing.T, mores map[string]interface{})
+	}{
+		// --- 1. 实例化赋值 ---
+		{
+			sourceQN: "com.example.rel.AssignRelationForClassSuite.testClassAssignments",
+			targetQN: "list",
+			checkMores: func(t *testing.T, m map[string]interface{}) {
+				assert.Equal(t, "new ArrayList<>()", m[java.RelAssignValueExpression])
+				assert.Equal(t, true, m[java.RelAssignIsInitializer])
+			},
+		},
+		// --- 2. 跨对象字段赋值 ---
+		{
+			sourceQN: "com.example.rel.AssignRelationForClassSuite.testClassAssignments",
+			targetQN: "name",
+			checkMores: func(t *testing.T, m map[string]interface{}) {
+				assert.Equal(t, "data", m[java.RelCallReceiver]) // 识别出 data 是接收者
+				assert.Equal(t, "\"Hello\"", m[java.RelAssignValueExpression])
+			},
+		},
+		// --- 3. 方法返回赋值 ---
+		{
+			sourceQN: "com.example.rel.AssignRelationForClassSuite.testClassAssignments",
+			targetQN: "globalObj",
+			checkMores: func(t *testing.T, m map[string]interface{}) {
+				assert.Equal(t, "fetchObject()", m[java.RelAssignValueExpression])
+				assert.Equal(t, "this", m[java.RelCallReceiver])
+			},
+		},
+		// --- 4. Null 赋值 ---
+		{
+			sourceQN: "com.example.rel.AssignRelationForClassSuite.testClassAssignments",
+			targetQN: "data",
+			matchMores: func(m map[string]interface{}) bool {
+				return m[java.RelAssignValueExpression] == "null"
+			},
+			checkMores: func(t *testing.T, m map[string]interface{}) {
+				assert.Equal(t, "=", m[java.RelAssignOperator])
+			},
+		},
+	}
+
+	// 匹配逻辑同上个回答中的通用逻辑
+	for _, exp := range expectedRels {
+		found := false
+		for _, rel := range allRelations {
+			if rel.Type == model.Assign &&
+				strings.Contains(rel.Source.QualifiedName, exp.sourceQN) &&
+				rel.Target.Name == exp.targetQN {
+
+				if exp.matchMores != nil && !exp.matchMores(rel.Mores) {
+					continue
+				}
+				if exp.checkMores != nil {
+					found = true
+					exp.checkMores(t, rel.Mores)
+					break
+				}
+			}
+		}
+		assert.True(t, found, "Missing Class Assign relation: %s -> %s", exp.sourceQN, exp.targetQN)
+	}
+}
+
 func TestJavaExtractor_Call(t *testing.T) {
 	// 1. 准备与提取
 	testFile := "testdata/com/example/rel/CallRelationSuite.java"
