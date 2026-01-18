@@ -10,7 +10,6 @@ import (
 	sitter "github.com/tree-sitter/go-tree-sitter"
 )
 
-// 预编译正则用于解析泛型 TypeArg
 var genericRegex = regexp.MustCompile(`<([^>]+)>`)
 
 type Extractor struct{}
@@ -19,8 +18,10 @@ func NewJavaExtractor() *Extractor {
 	return &Extractor{}
 }
 
-// JavaActionQuery 涵盖动作捕获
-// 增强 Assign：捕获初始化、更新表达式以及带有字段访问/数组访问的左值
+// JavaActionQuery 涵盖动作捕获。增强逻辑：
+// 1. 捕获赋值表达式 (assignment_expression) 的左值。
+// 2. 捕获变量声明初始化 (variable_declarator)。
+// 3. 捕获一元更新表达式 (update_expression)。
 const JavaActionQuery = `
 [
   (method_invocation name: (identifier) @call_target) @call_stmt
@@ -56,6 +57,7 @@ const JavaActionQuery = `
 ]
 `
 
+// Extract 是提取器的入口，协调组织、结构和动作三类关系的提取。
 func (e *Extractor) Extract(filePath string, gCtx *core.GlobalContext) ([]*model.DependencyRelation, error) {
 	fCtx, ok := gCtx.FileContexts[filePath]
 	if !ok {
@@ -64,13 +66,13 @@ func (e *Extractor) Extract(filePath string, gCtx *core.GlobalContext) ([]*model
 
 	var relations []*model.DependencyRelation
 
-	// 1. 组织与层级 (IMPORT, CONTAIN) - 保持原有分支
+	// 1. 组织与层级 (IMPORT, CONTAIN)
 	relations = append(relations, e.extractHierarchyRelations(fCtx, gCtx)...)
 
-	// 2. 静态结构 (EXTEND, IMPLEMENT, ANNOTATION, PARAMETER, RETURN, THROW, TYPE_ARG) - 保持原有分支
+	// 2. 静态结构 (EXTEND, IMPLEMENT, ANNOTATION, PARAMETER, RETURN, THROW, TYPE_ARG)
 	relations = append(relations, e.extractStructuralRelations(fCtx, gCtx)...)
 
-	// 3. 动态动作 (CALL, CREATE, USE, CAST, ASSIGN, CAPTURE) - 增强 ASSIGN
+	// 3. 动态动作 (CALL, CREATE, USE, CAST, ASSIGN, CAPTURE)
 	actionRels, err := e.extractActionRelations(fCtx, gCtx)
 	if err != nil {
 		return nil, err
@@ -80,7 +82,10 @@ func (e *Extractor) Extract(filePath string, gCtx *core.GlobalContext) ([]*model
 	return relations, nil
 }
 
-// --- 1. 组织层级优化 (保留你代码中的所有原始逻辑) ---
+// =============================================================================
+// 1. 层级关系提取 (Hierarchy)
+// =============================================================================
+
 func (e *Extractor) extractHierarchyRelations(fCtx *core.FileContext, gCtx *core.GlobalContext) []*model.DependencyRelation {
 	var rels []*model.DependencyRelation
 	fileElems, ok := gCtx.DefinitionsByQN[fCtx.FilePath]
@@ -89,6 +94,7 @@ func (e *Extractor) extractHierarchyRelations(fCtx *core.FileContext, gCtx *core
 	}
 	fileSource := fileElems[0].Element
 
+	// 处理 Import 关系
 	for _, imports := range fCtx.Imports {
 		for _, imp := range imports {
 			target := e.quickResolve(imp.RawImportPath, imp.Kind, gCtx, fCtx)
@@ -98,6 +104,7 @@ func (e *Extractor) extractHierarchyRelations(fCtx *core.FileContext, gCtx *core
 		}
 	}
 
+	// 处理 Contain 关系 (建立父子树形结构)
 	for _, entries := range fCtx.DefinitionsBySN {
 		for _, entry := range entries {
 			if entry.ParentQN == "" {
@@ -115,7 +122,10 @@ func (e *Extractor) extractHierarchyRelations(fCtx *core.FileContext, gCtx *core
 	return rels
 }
 
-// --- 2. 结构关系增强 (保留你代码中的所有原始逻辑) ---
+// =============================================================================
+// 2. 结构关系提取 (Structural)
+// =============================================================================
+
 func (e *Extractor) extractStructuralRelations(fCtx *core.FileContext, gCtx *core.GlobalContext) []*model.DependencyRelation {
 	var rels []*model.DependencyRelation
 	for _, entries := range fCtx.DefinitionsBySN {
@@ -126,15 +136,19 @@ func (e *Extractor) extractStructuralRelations(fCtx *core.FileContext, gCtx *cor
 			}
 			mores := elem.Extra.Mores
 
+			// ANNOTATION
 			for _, annoStr := range elem.Extra.Annotations {
 				rels = append(rels, e.createAnnotationRelation(elem, annoStr, fCtx, gCtx))
 			}
 
+			// EXTEND
 			if sc, ok := mores[ClassSuperClass].(string); ok && sc != "" {
 				rels = append(rels, &model.DependencyRelation{
 					Type: model.Extend, Source: elem, Target: e.quickResolve(e.clean(sc), model.Class, gCtx, fCtx),
 				})
 			}
+
+			// IMPLEMENT / EXTEND (Interface)
 			if ifaces, ok := mores[ClassImplementedInterfaces].([]string); ok {
 				for _, iface := range ifaces {
 					relType := model.Implement
@@ -147,12 +161,14 @@ func (e *Extractor) extractStructuralRelations(fCtx *core.FileContext, gCtx *cor
 				}
 			}
 
+			// RETURN
 			if ret, ok := mores[MethodReturnType].(string); ok && ret != "void" {
 				rels = append(rels, &model.DependencyRelation{
 					Type: model.Return, Source: elem, Target: e.quickResolve(e.clean(ret), model.Type, gCtx, fCtx),
 				})
 			}
 
+			// PARAMETER
 			if params, ok := mores[MethodParameters].([]string); ok {
 				for _, p := range params {
 					parts := strings.Fields(p)
@@ -171,6 +187,7 @@ func (e *Extractor) extractStructuralRelations(fCtx *core.FileContext, gCtx *cor
 				}
 			}
 
+			// THROW
 			if throws, ok := mores[MethodThrowsTypes].([]string); ok {
 				for _, t := range throws {
 					rels = append(rels, &model.DependencyRelation{
@@ -179,6 +196,7 @@ func (e *Extractor) extractStructuralRelations(fCtx *core.FileContext, gCtx *cor
 				}
 			}
 
+			// TYPE_ARG (泛型参数)
 			rawTypes := []string{}
 			if rt, ok := mores[MethodReturnType].(string); ok {
 				rawTypes = append(rawTypes, rt)
@@ -201,7 +219,10 @@ func (e *Extractor) extractStructuralRelations(fCtx *core.FileContext, gCtx *cor
 	return rels
 }
 
-// --- 3. 动作关系与 Capture (增强 ASSIGN) ---
+// =============================================================================
+// 3. 动作关系提取 (Action & Capture)
+// =============================================================================
+
 func (e *Extractor) extractActionRelations(fCtx *core.FileContext, gCtx *core.GlobalContext) ([]*model.DependencyRelation, error) {
 	tsLang, _ := core.GetLanguage(core.LangJava)
 	q, err := sitter.NewQuery(tsLang, JavaActionQuery)
@@ -220,7 +241,7 @@ func (e *Extractor) extractActionRelations(fCtx *core.FileContext, gCtx *core.Gl
 			break
 		}
 
-		// 第一个 capture 通常是整个语句块（stmt）
+		// 第一个 capture 为整个语句块 (stmt)
 		stmtNode := &match.Captures[0].Node
 		sourceElem := e.determinePreciseSource(stmtNode, fCtx, gCtx)
 		if sourceElem == nil {
@@ -241,7 +262,7 @@ func (e *Extractor) extractActionRelations(fCtx *core.FileContext, gCtx *core.Gl
 
 			target := e.quickResolve(e.clean(rawText), kind, gCtx, fCtx)
 
-			// 【关键修复 1】：每一条 Relation 必须拥有独立的 Mores，防止 Map 指针污染
+			// 每一条关系必须拥有独立的 Mores 防止并发或指针引用问题
 			mores := make(map[string]interface{})
 			mores[RelRawText] = stmtNode.Utf8Text(*fCtx.SourceBytes)
 			mores[RelContext] = stmtNode.Kind()
@@ -254,13 +275,14 @@ func (e *Extractor) extractActionRelations(fCtx *core.FileContext, gCtx *core.Gl
 				Mores:    mores,
 			}
 
+			// CAPTURE 判定：在 Lambda 内部引用了外部变量
 			if relType == model.Use && strings.Contains(sourceElem.QualifiedName, "lambda$") {
 				if e.isCaptured(target, sourceElem) {
 					rel.Type = model.Capture
 				}
 			}
 
-			// 【关键修复 2】：提取 Assign 元数据
+			// 补充 ASSIGN 关系的元数据
 			if relType == model.Assign {
 				e.enrichAssignMetadata(rel, &cap.Node, fCtx)
 			}
@@ -271,16 +293,14 @@ func (e *Extractor) extractActionRelations(fCtx *core.FileContext, gCtx *core.Gl
 	return rels, nil
 }
 
-// enrichAssignMetadata 处理赋值相关的细节信息
+// enrichAssignMetadata 向上回溯 AST 以填充赋值细节 (操作符、右值、Receiver、链式赋值等)。
 func (e *Extractor) enrichAssignMetadata(rel *model.DependencyRelation, capNode *sitter.Node, fCtx *core.FileContext) {
-	// 记录谁被改变了 (java.rel.assign.target_name)
 	rel.Mores[RelAssignTargetName] = capNode.Utf8Text(*fCtx.SourceBytes)
 
-	// 向上寻找最近的赋值、声明或更新节点
-	for curr := capNode; curr != nil; curr = curr.Parent() {
+	for curr := capNode.Parent(); curr != nil; curr = curr.Parent() {
 		kind := curr.Kind()
 
-		// 静态上下文检查
+		// 判定是否处于静态初始化块
 		if strings.Contains(rel.Source.QualifiedName, "$static$") {
 			rel.Mores[RelAssignIsStaticContext] = true
 		}
@@ -288,8 +308,7 @@ func (e *Extractor) enrichAssignMetadata(rel *model.DependencyRelation, capNode 
 		switch kind {
 		case "assignment_expression":
 			rel.Mores[RelAstKind] = kind
-
-			// 1. 提取操作符和复合赋值判断
+			// 操作符与复合赋值
 			if opNode := curr.ChildByFieldName("operator"); opNode != nil {
 				op := opNode.Utf8Text(*fCtx.SourceBytes)
 				rel.Mores[RelAssignOperator] = op
@@ -297,20 +316,15 @@ func (e *Extractor) enrichAssignMetadata(rel *model.DependencyRelation, capNode 
 					rel.Mores[RelAssignIsCompound] = true
 				}
 			}
-
-			// 2. 提取右值
+			// 右值与链式赋值
 			right := curr.ChildByFieldName("right")
 			if right != nil {
 				rel.Mores[RelAssignValueExpression] = right.Utf8Text(*fCtx.SourceBytes)
-
-				// --- 核心逻辑：判断是否为链式连续赋值 (RelAssignIsChained) ---
-				// 如果右值节点本身也是一个赋值表达式，说明是 a = (b = c = 1) 结构
 				if right.Kind() == "assignment_expression" {
 					rel.Mores[RelAssignIsChained] = true
 				}
 			}
-
-			// 3. 处理左值的特殊结构 (Receiver 和 Index)
+			// 左值细节：处理 this.field 或 arr[i]
 			left := curr.ChildByFieldName("left")
 			if left != nil {
 				if left.Kind() == "field_access" {
@@ -337,29 +351,30 @@ func (e *Extractor) enrichAssignMetadata(rel *model.DependencyRelation, capNode 
 		case "update_expression":
 			rel.Mores[RelAstKind] = kind
 			raw := curr.Utf8Text(*fCtx.SourceBytes)
-
-			// 提取操作符
 			if strings.Contains(raw, "++") {
 				rel.Mores[RelAssignOperator] = "++"
 			} else {
 				rel.Mores[RelAssignOperator] = "--"
 			}
-
-			// --- 核心逻辑：判断是否为后置更新 (RelAssignIsPostfix) ---
-			// 简单的判断方法：如果字符串末尾是操作符，则是后置 (如 i++)
+			// 判定前置还是后置 (i++ vs ++i)
 			if strings.HasSuffix(raw, "++") || strings.HasSuffix(raw, "--") {
 				rel.Mores[RelAssignIsPostfix] = true
 			}
 			return
 		}
 
-		// 提前跳出循环，避免无效向上回溯
+		// 边界：超出赋值语句的作用域
 		if kind == "expression_statement" || kind == "local_variable_declaration" {
 			break
 		}
 	}
 }
 
+// =============================================================================
+// 4. 辅助解析工具
+// =============================================================================
+
+// determinePreciseSource 确定触发动作的精确 Source (Method, Lambda, Field 等)
 func (e *Extractor) determinePreciseSource(n *sitter.Node, fCtx *core.FileContext, gCtx *core.GlobalContext) *model.CodeElement {
 	for curr := n.Parent(); curr != nil; curr = curr.Parent() {
 		k := curr.Kind()
@@ -376,7 +391,6 @@ func (e *Extractor) determinePreciseSource(n *sitter.Node, fCtx *core.FileContex
 		case "field_declaration":
 			targetKind = model.Field
 		case "variable_declarator":
-			// 如果是字段初始化，Source 应该是 Field 本身
 			if curr.Parent() != nil && curr.Parent().Kind() == "field_declaration" {
 				targetKind = model.Field
 			} else {
@@ -397,13 +411,8 @@ func (e *Extractor) determinePreciseSource(n *sitter.Node, fCtx *core.FileContex
 	return nil
 }
 
-// --- 辅助逻辑 ---
-
 func (e *Extractor) createAnnotationRelation(source *model.CodeElement, rawAnno string, fCtx *core.FileContext, gCtx *core.GlobalContext) *model.DependencyRelation {
-	// 1. 解析字符串提取 Name 和初始 Mores
 	targetName, mores := e.parseAnnotationString(rawAnno)
-
-	// 2. 填充 Target 类型 (基于我们分析的 Collector 标识)
 	mores[RelAnnotationTarget] = e.determineAnnotationTarget(source)
 
 	return &model.DependencyRelation{
@@ -417,12 +426,10 @@ func (e *Extractor) createAnnotationRelation(source *model.CodeElement, rawAnno 
 func (e *Extractor) parseAnnotationString(raw string) (string, map[string]interface{}) {
 	mores := make(map[string]interface{})
 	mores[RelRawText] = raw
-
 	content := strings.TrimPrefix(raw, "@")
 	if idx := strings.Index(content, "("); idx != -1 {
 		name := content[:idx]
 		params := content[idx+1 : strings.LastIndex(content, ")")]
-
 		if strings.Contains(params, "=") {
 			mores[RelAnnotationParams] = params
 		} else {
@@ -442,7 +449,6 @@ func (e *Extractor) determineAnnotationTarget(elem *model.CodeElement) string {
 	case model.Method:
 		return "METHOD"
 	case model.Variable:
-		// 关键：利用 Collector 填充的 VariableIsParam 判定
 		if isParam, _ := elem.Extra.Mores[VariableIsParam].(bool); isParam {
 			return "PARAMETER"
 		}
@@ -456,7 +462,6 @@ func (e *Extractor) extractTypeArgs(signature string) []string {
 	if len(match) < 2 {
 		return nil
 	}
-	// 处理 List<A, B> 情况
 	args := strings.Split(match[1], ",")
 	for i := range args {
 		args[i] = e.clean(args[i])
@@ -465,12 +470,9 @@ func (e *Extractor) extractTypeArgs(signature string) []string {
 }
 
 func (e *Extractor) isCaptured(target *model.CodeElement, source *model.CodeElement) bool {
-	// 简单的 CAPTURE 判定准则：
-	// Target 是变量，且 Target 的 QN 不包含 Source 的 QN 前缀（即不在当前 Lambda 内部定义）
 	if target.Kind != model.Variable {
 		return false
 	}
-	// 且 Target 不属于类字段 (这里需要你的 Resolver 能区分出 LocalVar 和 Field)
 	return !strings.HasPrefix(target.QualifiedName, source.QualifiedName)
 }
 
@@ -508,6 +510,5 @@ func (e *Extractor) quickResolve(symbol string, kind model.ElementKind, gCtx *co
 	if len(entries) > 0 {
 		return entries[0].Element
 	}
-
 	return &model.CodeElement{Name: symbol, QualifiedName: symbol, Kind: kind}
 }
