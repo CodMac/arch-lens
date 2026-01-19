@@ -64,15 +64,22 @@ const (
 
 // --- ASSIGN 关系专用 (java.rel.assign) ---
 const (
-	RelAssignOperator        = "java.rel.assign.operator"          // 赋值运算符，如 "=", "+=", "++"
-	RelAssignValueExpression = "java.rel.assign.value_expression"  // 赋值语句右侧的原始表达式文本
-	RelAssignTargetName      = "java.rel.assign.target_name"       // 赋值语句目标 (谁被改变了)
-	RelAssignIsInitializer   = "java.rel.assign.is_initializer"    // 是否为声明时的初始化赋值 (如 int i = 0)
-	RelAssignIsCompound      = "java.rel.assign.is_compound"       // 是否为复合赋值 (如 +=, -=)
-	RelAssignIsChained       = "java.rel.assign.is_chained"        // 是否为链式连续赋值 (如 a = b = c = 1)
-	RelAssignIsPostfix       = "java.rel.assign.is_postfix"        // 是否为后置更新 (如 i++)
-	RelAssignIndexExpression = "java.rel.assign.index_expression"  // 数组赋值时的索引表达式 (如 arr[index] 中的 index)
-	RelAssignIsStaticContext = "java.rel.assign.is_static_context" // 赋值是否发生在静态初始化块或静态方法中
+	RelAssignOperator           = "java.rel.assign.operator"             // 赋值运算符，如 "=", "+=", "++"
+	RelAssignValueExpression    = "java.rel.assign.value_expression"     // 赋值语句右侧的原始表达式文本
+	RelAssignTargetName         = "java.rel.assign.target_name"          // 赋值语句目标 (谁被改变了)
+	RelAssignReceiver           = "java.rel.assign.receiver"             // 赋值接收者 (如 "this", "super", 或变量名)
+	RelAssignIsInitializer      = "java.rel.assign.is_initializer"       // 是否为声明时的初始化赋值 (如 int i = 0)
+	RelAssignIsCompound         = "java.rel.assign.is_compound"          // 是否为复合赋值 (如 +=, -=)
+	RelAssignIsChained          = "java.rel.assign.is_chained"           // 是否为链式连续赋值 (如 a = b = c = 1)
+	RelAssignIsPostfix          = "java.rel.assign.is_postfix"           // 是否为后置更新 (如 i++)
+	RelAssignIsPrefix           = "java.rel.assign.is_prefix"            // 是否为前置更新 (如 ++i)
+	RelAssignIndexExpression    = "java.rel.assign.index_expression"     // 数组赋值时的索引表达式 (如 arr[index] 中的 index)
+	RelAssignIsStaticContext    = "java.rel.assign.is_static_context"    // 赋值是否发生在静态初始化块或静态方法中
+	RelAssignIsParameterBinding = "java.rel.assign.is_parameter_binding" // 判定是否为方法入参绑定
+	RelAssignIsReturnValue      = "java.rel.assign.is_return_value"      // 判定是否为方法返回值流向
+	RelAssignIsCastCheck        = "java.rel.assign.is_cast_check"        // 赋值过程中是否存在类型转换
+	RelAssignCastType           = "java.rel.assign.cast_type"            // 转换的目标类型
+	RelAssignIsConstant         = "java.rel.assign.is_constant"          // 右值是否为字面量常量
 )
 
 // --- CREATE 关系专用 (java.rel.create) ---

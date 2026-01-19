@@ -34,6 +34,12 @@ const JavaActionQuery = `
   (field_access field: (identifier) @use_field_target) @use_field_stmt
   (cast_expression type: (type_identifier) @cast_target) @cast_stmt
   
+  ; --- 显式构造函数调用 (super/this) ---
+  (explicit_constructor_invocation [
+      (this) @call_target
+      (super) @call_target
+  ]) @explicit_constructor_stmt
+  
   ; --- ASSIGN 增强部分 ---
   (assignment_expression 
       left: [
@@ -287,13 +293,18 @@ func (e *Extractor) extractActionRelations(fCtx *core.FileContext, gCtx *core.Gl
 				e.enrichAssignMetadata(rel, &cap.Node, fCtx)
 			}
 
+			// 处理逻辑中，如果是 CALL 或 CREATE 类型，调用专用的元数据增强函数
+			if relType == model.Call || relType == model.Create {
+				e.enrichCallMetadata(rel, &cap.Node, fCtx, gCtx)
+			}
+
 			rels = append(rels, rel)
 		}
 	}
 	return rels, nil
 }
 
-// enrichAssignMetadata 向上回溯 AST 以填充赋值细节 (操作符、右值、Receiver、链式赋值等)。
+// enrichAssignMetadata 向上回溯 AST 以填充赋值细节 (操作符、右值、Receiver、数据流特征等)。
 func (e *Extractor) enrichAssignMetadata(rel *model.DependencyRelation, capNode *sitter.Node, fCtx *core.FileContext) {
 	rel.Mores[RelAssignTargetName] = capNode.Utf8Text(*fCtx.SourceBytes)
 
@@ -308,7 +319,7 @@ func (e *Extractor) enrichAssignMetadata(rel *model.DependencyRelation, capNode 
 		switch kind {
 		case "assignment_expression":
 			rel.Mores[RelAstKind] = kind
-			// 操作符与复合赋值
+			// 1. 提取操作符与复合赋值判定
 			if opNode := curr.ChildByFieldName("operator"); opNode != nil {
 				op := opNode.Utf8Text(*fCtx.SourceBytes)
 				rel.Mores[RelAssignOperator] = op
@@ -316,20 +327,32 @@ func (e *Extractor) enrichAssignMetadata(rel *model.DependencyRelation, capNode 
 					rel.Mores[RelAssignIsCompound] = true
 				}
 			}
-			// 右值与链式赋值
+
+			// 2. 提取右值及其数据流特征
 			right := curr.ChildByFieldName("right")
 			if right != nil {
+				// 先赋默认文本值，确保在 analyzeDataFlow 覆盖失败时有底座
 				rel.Mores[RelAssignValueExpression] = right.Utf8Text(*fCtx.SourceBytes)
-				if right.Kind() == "assignment_expression" {
+
+				// 处理数据流增强信息 (B)，如果是 Cast，内部会重写 ValueExpression 执行“去壳”
+				e.analyzeDataFlow(rel, right, fCtx)
+
+				finalVal := right
+				// 如果右边还是个赋值表达式，说明是链式调用的一部分
+				for finalVal.Kind() == "assignment_expression" {
 					rel.Mores[RelAssignIsChained] = true
+					finalVal = finalVal.ChildByFieldName("right")
+					e.analyzeDataFlow(rel, finalVal, fCtx)
+					rel.Mores[RelAssignValueExpression] = finalVal.Utf8Text(*fCtx.SourceBytes)
 				}
 			}
-			// 左值细节：处理 this.field 或 arr[i]
+
+			// 3. 处理左值细节 (Receiver 与 Index)
 			left := curr.ChildByFieldName("left")
 			if left != nil {
 				if left.Kind() == "field_access" {
 					if obj := left.ChildByFieldName("object"); obj != nil {
-						rel.Mores[RelCallReceiver] = obj.Utf8Text(*fCtx.SourceBytes)
+						rel.Mores[RelAssignReceiver] = obj.Utf8Text(*fCtx.SourceBytes)
 					}
 				} else if left.Kind() == "array_access" {
 					if idx := left.ChildByFieldName("index"); idx != nil {
@@ -344,7 +367,9 @@ func (e *Extractor) enrichAssignMetadata(rel *model.DependencyRelation, capNode 
 			rel.Mores[RelAssignIsInitializer] = true
 			rel.Mores[RelAssignOperator] = "="
 			if val := curr.ChildByFieldName("value"); val != nil {
+				// 【关键修复】：先赋默认值，再通过分析覆盖
 				rel.Mores[RelAssignValueExpression] = val.Utf8Text(*fCtx.SourceBytes)
+				e.analyzeDataFlow(rel, val, fCtx)
 			}
 			return
 
@@ -356,23 +381,103 @@ func (e *Extractor) enrichAssignMetadata(rel *model.DependencyRelation, capNode 
 			} else {
 				rel.Mores[RelAssignOperator] = "--"
 			}
-			// 判定前置还是后置 (i++ vs ++i)
 			if strings.HasSuffix(raw, "++") || strings.HasSuffix(raw, "--") {
 				rel.Mores[RelAssignIsPostfix] = true
+			} else {
+				rel.Mores[RelAssignIsPrefix] = true
 			}
 			return
 		}
 
-		// 边界：超出赋值语句的作用域
 		if kind == "expression_statement" || kind == "local_variable_declaration" {
 			break
 		}
 	}
 }
 
-// =============================================================================
-// 4. 辅助解析工具
-// =============================================================================
+func (e *Extractor) enrichCallMetadata(rel *model.DependencyRelation, capNode *sitter.Node, fCtx *core.FileContext, gCtx *core.GlobalContext) {
+	// 查找最近的调用容器节点
+	var callNode *sitter.Node
+	for curr := capNode.Parent(); curr != nil; curr = curr.Parent() {
+		k := curr.Kind()
+		if k == "method_invocation" || k == "method_reference" ||
+			k == "object_creation_expression" || k == "explicit_constructor_invocation" {
+			callNode = curr
+			rel.Mores[RelAstKind] = k
+			break
+		}
+	}
+
+	if callNode == nil {
+		return
+	}
+
+	kind := callNode.Kind()
+
+	// 1. 处理方法调用 (method_invocation)
+	if kind == "method_invocation" {
+		receiver := callNode.ChildByFieldName("object")
+		if receiver != nil {
+			text := receiver.Utf8Text(*fCtx.SourceBytes)
+			rel.Mores[RelCallReceiver] = text
+
+			if receiver.Kind() == "method_invocation" {
+				rel.Mores[RelCallIsChained] = true
+				rel.Mores[RelCallReceiverExpression] = text
+			}
+
+			if len(text) > 0 && text[0] >= 'A' && text[0] <= 'Z' {
+				rel.Mores[RelCallIsStatic] = true
+				rel.Mores[RelCallReceiverType] = text
+			}
+		} else {
+			rel.Mores[RelCallReceiver] = "this"
+			rel.Mores[RelCallIsStatic] = false
+		}
+
+		if rel.Mores[RelCallReceiver] == "super" {
+			rel.Mores[RelCallIsInherited] = true
+		}
+
+		if typeArgs := callNode.ChildByFieldName("type_arguments"); typeArgs != nil {
+			rel.Mores[RelCallTypeArguments] = strings.Trim(typeArgs.Utf8Text(*fCtx.SourceBytes), "<>")
+		}
+	}
+
+	// 2. 处理对象创建 (object_creation_expression)
+	if kind == "object_creation_expression" {
+		rel.Mores[RelCallIsConstructor] = true
+		if typeNode := callNode.ChildByFieldName("type"); typeNode != nil {
+			if typeNode.Kind() == "generic_type" {
+				if typeArgs := typeNode.ChildByFieldName("type_arguments"); typeArgs != nil {
+					rel.Mores[RelCallTypeArguments] = strings.Trim(typeArgs.Utf8Text(*fCtx.SourceBytes), "<>")
+				}
+			}
+		}
+	}
+
+	// 3. 处理方法引用 (method_reference)
+	if kind == "method_reference" {
+		rel.Mores[RelCallIsFunctional] = true
+		if obj := callNode.Child(0); obj != nil {
+			rel.Mores[RelCallReceiver] = obj.Utf8Text(*fCtx.SourceBytes)
+		}
+	}
+
+	// 4. 处理显式构造函数调用 (explicit_constructor_invocation)
+	if kind == "explicit_constructor_invocation" {
+		// 这里的 capNode 就是之前 Query 里的 this 或 super
+		rel.Mores[RelCallReceiver] = capNode.Utf8Text(*fCtx.SourceBytes)
+	}
+
+	// 5. 补充 Enclosing Method (如果 Source 是 Lambda)
+	if strings.Contains(rel.Source.QualifiedName, "lambda$") {
+		parts := strings.Split(rel.Source.QualifiedName, ".")
+		if len(parts) >= 2 {
+			rel.Mores[RelCallEnclosingMethod] = parts[len(parts)-2]
+		}
+	}
+}
 
 // determinePreciseSource 确定触发动作的精确 Source (Method, Lambda, Field 等)
 func (e *Extractor) determinePreciseSource(n *sitter.Node, fCtx *core.FileContext, gCtx *core.GlobalContext) *model.CodeElement {
@@ -409,6 +514,30 @@ func (e *Extractor) determinePreciseSource(n *sitter.Node, fCtx *core.FileContex
 		}
 	}
 	return nil
+}
+
+// analyzeDataFlow 辅助函数：分析右值节点的性质，增强数据流信息
+func (e *Extractor) analyzeDataFlow(rel *model.DependencyRelation, node *sitter.Node, fCtx *core.FileContext) {
+	kind := node.Kind()
+
+	if strings.Contains(kind, "literal") || kind == "null_literal" {
+		rel.Mores[RelAssignIsConstant] = true
+	}
+
+	if kind == "method_invocation" {
+		rel.Mores[RelAssignIsReturnValue] = true
+	}
+
+	if kind == "cast_expression" {
+		rel.Mores[RelAssignIsCastCheck] = true
+		if typeNode := node.ChildByFieldName("type"); typeNode != nil {
+			rel.Mores[RelAssignCastType] = typeNode.Utf8Text(*fCtx.SourceBytes)
+		}
+		// 【去壳关键点】：如果识别到 Cast，覆盖外层的 ValueExpression
+		if valueNode := node.ChildByFieldName("value"); valueNode != nil {
+			rel.Mores[RelAssignValueExpression] = valueNode.Utf8Text(*fCtx.SourceBytes)
+		}
+	}
 }
 
 func (e *Extractor) createAnnotationRelation(source *model.CodeElement, rawAnno string, fCtx *core.FileContext, gCtx *core.GlobalContext) *model.DependencyRelation {
@@ -482,6 +611,8 @@ func (e *Extractor) mapAction(capName string) (model.DependencyType, model.Eleme
 		return model.Call, model.Method
 	case "create_target":
 		return model.Create, model.Class
+	case "explicit_constructor_stmt": // 处理显式构造函数调用
+		return model.Call, model.Method
 	case "use_field_target":
 		return model.Use, model.Field
 	case "assign_target":
