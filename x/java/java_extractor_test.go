@@ -1404,7 +1404,7 @@ func runPhase1Collection(t *testing.T, files []string) *core.GlobalContext {
 	col := java.NewJavaCollector()
 
 	for _, file := range files {
-		rootNode, sourceBytes, err := javaParser.ParseFile(file, false, false)
+		rootNode, sourceBytes, err := javaParser.ParseFile(file, true, false)
 		if err != nil {
 			t.Fatalf("Failed to parse file %s: %v", file, err)
 		}
@@ -1434,10 +1434,4 @@ func printRelations(relations []*model.DependencyRelation) {
 			}
 		}
 	}
-}
-
-func isMatchMores(m map[string]interface{}, target string) bool {
-	// 这里可以根据上下文或 AstKind 简单分流
-	// 比如：如果测试用例期待的是 index_expression，而当前 rel 却没有，那就跳过
-	return true // 默认返回 true，依靠 checkMores 报错
 }
