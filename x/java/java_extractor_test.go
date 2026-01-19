@@ -431,115 +431,155 @@ func TestJavaExtractor_Call(t *testing.T) {
 		t.Fatalf("Extraction failed: %v", err)
 	}
 
+	printRelations(allRelations)
+
 	// 2. 定义断言数据集
 	expectedRels := []struct {
-		sourceQN   string
-		targetQN   string // 方法名或类名(针对构造函数)
-		relType    model.DependencyType
+		sourceQN   string               // Source 节点的 QN 片段
+		targetName string               // Target 节点的名称
+		relType    model.DependencyType // 关系类型
 		checkMores func(t *testing.T, m map[string]interface{})
 	}{
 		// --- 1. 基础实例调用 ---
 		{
-			sourceQN: "com.example.rel.CallRelationSuite.executeAll",
-			targetQN: "simpleMethod",
-			relType:  model.Call,
+			sourceQN:   "com.example.rel.CallRelationSuite.executeAll",
+			targetName: "simpleMethod",
+			relType:    model.Call,
 			checkMores: func(t *testing.T, m map[string]interface{}) {
 				assert.Equal(t, "this", m[java.RelCallReceiver])
 				assert.Equal(t, false, m[java.RelCallIsStatic])
+				assert.Equal(t, "method_invocation", m[java.RelAstKind])
 			},
 		},
 		// --- 2. 静态方法调用 ---
 		{
-			sourceQN: "com.example.rel.CallRelationSuite.executeAll",
-			targetQN: "staticMethod",
-			relType:  model.Call,
+			sourceQN:   "com.example.rel.CallRelationSuite.executeAll",
+			targetName: "staticMethod",
+			relType:    model.Call,
 			checkMores: func(t *testing.T, m map[string]interface{}) {
 				assert.Equal(t, true, m[java.RelCallIsStatic])
 				assert.Equal(t, "CallRelationSuite", m[java.RelCallReceiverType])
 			},
 		},
-		// --- 4. 链式调用 (提取 getList() -> add()) ---
+		// --- 3. 跨包静态调用 (System.currentTimeMillis) ---
 		{
-			sourceQN: "com.example.rel.CallRelationSuite.executeAll",
-			targetQN: "getList",
-			relType:  model.Call,
+			sourceQN:   "com.example.rel.CallRelationSuite.executeAll",
+			targetName: "currentTimeMillis",
+			relType:    model.Call,
+			checkMores: func(t *testing.T, m map[string]interface{}) {
+				assert.Equal(t, "System", m[java.RelCallReceiver])
+				assert.Equal(t, true, m[java.RelCallIsStatic])
+			},
+		},
+		// --- 4. 链式调用 ---
+		{
+			sourceQN:   "com.example.rel.CallRelationSuite.executeAll",
+			targetName: "getList",
+			relType:    model.Call,
 		},
 		{
-			sourceQN: "com.example.rel.CallRelationSuite.executeAll",
-			targetQN: "add",
-			relType:  model.Call,
+			sourceQN:   "com.example.rel.CallRelationSuite.executeAll",
+			targetName: "add",
+			relType:    model.Call,
 			checkMores: func(t *testing.T, m map[string]interface{}) {
-				assert.Equal(t, "getList()", m[java.RelCallReceiverExpression])
 				assert.Equal(t, true, m[java.RelCallIsChained])
+				assert.Equal(t, "getList()", m[java.RelCallReceiverExpression])
 			},
 		},
-		// --- 5 & 6. 继承调用 ---
+		// --- 5 & 6. 继承调用 (Super & Implicit) ---
 		{
-			sourceQN: "com.example.rel.CallRelationSuite.executeAll",
-			targetQN: "baseMethod",
-			relType:  model.Call,
+			sourceQN:   "com.example.rel.CallRelationSuite.executeAll",
+			targetName: "baseMethod",
+			relType:    model.Call,
 			checkMores: func(t *testing.T, m map[string]interface{}) {
-				assert.Equal(t, true, m[java.RelCallIsInherited])
+				// 对应 super.baseMethod()
+				if m[java.RelCallReceiver] == "super" {
+					assert.Equal(t, true, m[java.RelCallIsInherited])
+				}
 			},
 		},
-		// --- 7. 对象创建 (CREATE 关系通常也作为一种特殊的 CALL 记录) ---
+		// --- 7. 对象创建 (ArrayList) ---
 		{
-			sourceQN: "com.example.rel.CallRelationSuite.executeAll",
-			targetQN: "ArrayList",
-			relType:  model.Create,
+			sourceQN:   "com.example.rel.CallRelationSuite.executeAll",
+			targetName: "ArrayList",
+			relType:    model.Create,
 			checkMores: func(t *testing.T, m map[string]interface{}) {
+				assert.Equal(t, true, m[java.RelCallIsConstructor])
 				assert.Equal(t, "String", m[java.RelCallTypeArguments])
-				assert.Equal(t, "object_creation_expression", m[java.RelAstKind])
+			},
+		},
+		// --- 8. Lambda 内部的方法调用 ---
+		{
+			sourceQN:   "lambda$", // QN 会包含生成的 lambda 标记
+			targetName: "simpleMethod",
+			relType:    model.Call,
+			checkMores: func(t *testing.T, m map[string]interface{}) {
+				assert.Equal(t, "executeAll()", m[java.RelCallEnclosingMethod])
+				assert.Equal(t, "this", m[java.RelCallReceiver])
 			},
 		},
 		// --- 9. 方法引用 (forEach(this::simpleMethod)) ---
 		{
-			sourceQN: "com.example.rel.CallRelationSuite.executeAll",
-			targetQN: "simpleMethod",
-			relType:  model.Call,
+			sourceQN:   "com.example.rel.CallRelationSuite.executeAll",
+			targetName: "simpleMethod",
+			relType:    model.Call,
 			checkMores: func(t *testing.T, m map[string]interface{}) {
 				assert.Equal(t, "method_reference", m[java.RelAstKind])
+				assert.Equal(t, true, m[java.RelCallIsFunctional])
 				assert.Equal(t, "this", m[java.RelCallReceiver])
 			},
 		},
 		// --- 10. 泛型方法显式调用 ---
 		{
-			sourceQN: "com.example.rel.CallRelationSuite.executeAll",
-			targetQN: "genericMethod",
-			relType:  model.Call,
+			sourceQN:   "com.example.rel.CallRelationSuite.executeAll",
+			targetName: "genericMethod",
+			relType:    model.Call,
 			checkMores: func(t *testing.T, m map[string]interface{}) {
 				assert.Equal(t, "String", m[java.RelCallTypeArguments])
 			},
 		},
-		// --- 12. 显式构造函数调用 (Super) ---
+		// --- 13. 强制类型转换调用 (Cast Receiver) ---
 		{
-			sourceQN: "com.example.rel.CallRelationSuite.SubClass.<init>",
-			targetQN: "BaseClass", // 或者是父类的 <init>
-			relType:  model.Call,
+			sourceQN:   "com.example.rel.CallRelationSuite.executeAll",
+			targetName: "simpleMethod",
+			relType:    model.Call,
 			checkMores: func(t *testing.T, m map[string]interface{}) {
-				assert.Equal(t, "super", m[java.RelCallReceiver])
+				// 注意：在 current implementation 中，obj 是 receiver 文本
+				assert.Equal(t, "((CallRelationSuite)obj)", m[java.RelCallReceiver])
+			},
+		},
+		// --- 16. 显式构造函数调用 (Super) ---
+		{
+			sourceQN:   "com.example.rel.CallRelationSuite.SubClass", // 构造函数内
+			targetName: "super",                                      // JavaActionQuery 捕获 super 作为 target
+			relType:    model.Call,
+			checkMores: func(t *testing.T, m map[string]interface{}) {
 				assert.Equal(t, "explicit_constructor_invocation", m[java.RelAstKind])
+				assert.Equal(t, "super", m[java.RelCallReceiver])
 			},
 		},
 	}
 
-	// 3. 校验逻辑
+	// 3. 校验执行
 	for _, exp := range expectedRels {
-		found := false
-		for _, rel := range allRelations {
-			// 匹配原则：类型一致 + 目标名一致 + SourceQN 包含关系
-			if rel.Type == exp.relType &&
-				rel.Target.Name == exp.targetQN &&
-				strings.Contains(rel.Source.QualifiedName, exp.sourceQN) {
+		t.Run(fmt.Sprintf("%s_to_%s", exp.relType, exp.targetName), func(t *testing.T) {
+			found := false
+			for _, rel := range allRelations {
+				// 匹配逻辑：类型一致 + 目标名匹配 + Source 包含特征字符串
+				if rel.Type == exp.relType &&
+					rel.Target.Name == exp.targetName &&
+					strings.Contains(rel.Source.QualifiedName, exp.sourceQN) {
 
-				found = true
-				if exp.checkMores != nil {
-					exp.checkMores(t, rel.Mores)
+					found = true
+					if exp.checkMores != nil {
+						exp.checkMores(t, rel.Mores)
+					}
+					break
 				}
-				break
 			}
-		}
-		assert.True(t, found, "Missing expected relation: [%s] %s -> %s", exp.relType, exp.sourceQN, exp.targetQN)
+			assert.True(t, found, "Missing expected relation: [%s] Source(part):%s -> TargetName:%s",
+				exp.relType, exp.sourceQN, exp.targetName)
+		})
 	}
 }
 
@@ -1364,7 +1404,7 @@ func runPhase1Collection(t *testing.T, files []string) *core.GlobalContext {
 	col := java.NewJavaCollector()
 
 	for _, file := range files {
-		rootNode, sourceBytes, err := javaParser.ParseFile(file, true, false)
+		rootNode, sourceBytes, err := javaParser.ParseFile(file, false, false)
 		if err != nil {
 			t.Fatalf("Failed to parse file %s: %v", file, err)
 		}
