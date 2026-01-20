@@ -1,4 +1,4 @@
-package java
+package others
 
 import "github.com/CodMac/go-treesitter-dependency-analyzer/model"
 

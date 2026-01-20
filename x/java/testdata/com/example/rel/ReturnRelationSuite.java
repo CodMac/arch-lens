@@ -5,38 +5,32 @@ import java.util.List;
 public class ReturnRelationSuite {
 
     // 1. 对象返回
-    // Source: Method(getName), Target: Class(String)
-    // Mores: {
-    //   "java.rel.return.is_primitive": false,
-    //   "java.rel.ast_kind": "method_declaration"
-    // }
+    // Source: com.example.rel.ReturnRelationSuite.getName
+    // Target: java.lang.String
+    // Mores: { "java.rel.return.is_primitive": false }
     public String getName() { return "test"; }
 
     // 2. 数组返回
-    // Source: Method(getBuffer), Target: Type(byte)
-    // Mores: {
-    //   "java.rel.return.is_array": true,
-    //   "java.rel.return.dimensions": 1,
-    //   "java.rel.return.is_primitive": true
-    // }
+    // Source: com.example.rel.ReturnRelationSuite.getBuffer
+    // Target: byte
+    // Mores: { "java.rel.return.is_array": true, "java.rel.return.dimensions": 1, "java.rel.return.is_primitive": true }
     public byte[] getBuffer() { return new byte[0]; }
 
     // 3. 泛型复合返回
-    // Source: Method(getValues), Target: Class(List)
-    // Mores: {
-    //   "java.rel.return.has_type_arguments": true,
-    //   "java.rel.ast_kind": "generic_type"
-    // }
-    // 注意：List<Integer> 还会触发 TypeArg 关系：[Method(getValues) -> Class(Integer)]
+    // Source: com.example.rel.ReturnRelationSuite.getValues
+    // Target: java.util.List
+    // Mores: { "java.rel.return.has_type_arguments": true }
     public List<Integer> getValues() { return null; }
 
     // 4. 基础类型返回
-    // Source: Method(getAge), Target: Type(int)
+    // Source: com.example.rel.ReturnRelationSuite.getAge
+    // Target: int
     // Mores: { "java.rel.return.is_primitive": true }
     public int getAge() { return 18; }
 
-    // 5. 嵌套数组返回 (深度测试)
-    // Source: Method(getMatrix), Target: Type(double)
+    // 5. 嵌套数组返回
+    // Source: com.example.rel.ReturnRelationSuite.getMatrix
+    // Target: double
     // Mores: { "java.rel.return.is_array": true, "java.rel.return.dimensions": 2 }
-    public double[][] getMatrix() { return new double[0][0]; }
+    public double[][] getMatrix() { return null; }
 }
