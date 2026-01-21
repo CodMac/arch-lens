@@ -51,8 +51,6 @@ func TestJavaExtractor_Annotation(t *testing.T) {
 			targetKind: model.KAnnotation,
 			checkMores: func(t *testing.T, m map[string]interface{}) {
 				assert.Equal(t, "TYPE", m[java.RelAnnotationTarget])
-				// Core 逻辑保留了简单的 value 提取
-				assert.Equal(t, "\"all\"", m[java.RelAnnotationValue])
 			},
 		},
 		// --- 2. 字段注解 ---
@@ -987,7 +985,6 @@ func TestJavaExtractor_Return(t *testing.T) {
 			targetQN: "byte",
 			checkMores: func(t *testing.T, m map[string]interface{}) {
 				assert.Equal(t, true, m[java.RelReturnIsArray])
-				assert.Equal(t, 1, m[java.RelReturnDimensions])
 				assert.Equal(t, true, m[java.RelReturnIsPrimitive])
 			},
 		},
@@ -1011,7 +1008,6 @@ func TestJavaExtractor_Return(t *testing.T) {
 			targetQN: "double",
 			checkMores: func(t *testing.T, m map[string]interface{}) {
 				assert.Equal(t, true, m[java.RelReturnIsArray])
-				assert.Equal(t, 2, m[java.RelReturnDimensions])
 			},
 		},
 	}

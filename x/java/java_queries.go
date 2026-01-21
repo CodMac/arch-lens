@@ -45,5 +45,17 @@ const JavaActionQuery = `
         (identifier) @assign_target
         (field_access field: (identifier) @assign_target)
     ]) @update_stmt
+
+  ; 9. 抛出异常 (Throw Action)
+  (throw_statement
+    [
+      (object_creation_expression 
+        type: [
+          (type_identifier) @throw_target 
+          (generic_type (type_identifier) @throw_target)
+        ])
+      (identifier) @throw_target
+    ]
+  ) @throw_stmt
 ]
 `
