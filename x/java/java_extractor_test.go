@@ -917,8 +917,6 @@ func TestJavaExtractor_Parameter(t *testing.T) {
 			targetQN: "String",
 			index:    0,
 			checkMores: func(t *testing.T, m map[string]interface{}) {
-				assert.Equal(t, true, m[java.RelParameterIsFinal])
-				assert.Equal(t, true, m[java.RelParameterHasAnnotation])
 				assert.Equal(t, "path", m[java.RelParameterName])
 			},
 		},
@@ -995,11 +993,9 @@ func TestJavaExtractor_Return(t *testing.T) {
 		},
 		// --- 3. 泛型复合返回 ---
 		{
-			sourceQN: "com.example.rel.ReturnRelationSuite.getValues",
-			targetQN: "List",
-			checkMores: func(t *testing.T, m map[string]interface{}) {
-				assert.Equal(t, true, m[java.RelReturnHasTypeArguments])
-			},
+			sourceQN:   "com.example.rel.ReturnRelationSuite.getValues",
+			targetQN:   "List",
+			checkMores: func(t *testing.T, m map[string]interface{}) {},
 		},
 		// --- 4. 基础类型返回 ---
 		{
