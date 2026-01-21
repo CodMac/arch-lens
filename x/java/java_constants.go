@@ -63,6 +63,8 @@ const (
 	RelAnnotationTarget      = "java.rel.annotation.target"       //
 	RelThrowIndex            = "java.rel.throw.index"             // 在 throws 声明列表中的位置索引 (从 0 开始)
 	RelThrowIsSignature      = "java.rel.throw.is_signature"      // 是否为方法签名中 throws 关键字后的声明
+	RelThrowIsRuntime        = "java.rel.throw.is_runtime"        // 是否为主动抛出的运行时异常 (RuntimeException 及其子类)
+	RelThrowIsRethrow        = "java.rel.throw.is_rethrow"        // 是否为重新抛出已存在的异常对象 (如 throw e)
 	RelParameterIndex        = "java.rel.parameter.index"         // 参数在方法签名中的从 0 开始的索引位置
 	RelParameterName         = "java.rel.parameter.name"          // 参数定义的名称 (如 "id", "name")
 	RelParameterIsVarargs    = "java.rel.parameter.is_varargs"    // 是否为可变参数 (Object... args)
@@ -123,8 +125,6 @@ const (
 	RelCaptureEnclosingLambda    = "java.rel.capture.enclosing_lambda"     // 在嵌套 Lambda 场景下，记录直接包含当前 Lambda 的父 Lambda
 	RelAnnotationParams          = "java.rel.annotation.params"            //
 	RelAnnotationValue           = "java.rel.annotation.value"             //
-	RelThrowIsRuntime            = "java.rel.throw.is_runtime"             // 是否为主动抛出的运行时异常 (RuntimeException 及其子类)
-	RelThrowIsRethrow            = "java.rel.throw.is_rethrow"             // 是否为重新抛出已存在的异常对象 (如 throw e)
 	RelParameterIsFinal          = "java.rel.parameter.is_final"           // 参数是否带有 final 修饰符
 	RelParameterHasAnnotation    = "java.rel.parameter.has_annotation"     // 参数是否带有注解
 	RelReturnDimensions          = "java.rel.return.dimensions"            // 返回数组的维度 (如 byte[][] 为 2)

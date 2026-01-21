@@ -115,6 +115,8 @@ func (e *Extractor) enrichThrowCore(rel *model.DependencyRelation, node, stmt *s
 		// 识别是否是 new 出来的运行时异常
 		if node.Kind() == "type_identifier" || (node.Parent() != nil && node.Parent().Kind() == "object_creation_expression") {
 			rel.Mores[RelThrowIsRuntime] = true
+		} else if node.Kind() == "identifier" {
+			rel.Mores[RelThrowIsRethrow] = true // throw e;
 		}
 		return
 	}
