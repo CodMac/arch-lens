@@ -351,7 +351,23 @@ func (e *Extractor) quickResolve(symbol string, kind model.ElementKind, gCtx *co
 // clean 去除类型中的泛型符号和注解前缀。
 func (e *Extractor) clean(s string) string {
 	s = strings.TrimPrefix(s, "@")
+
+	// 1. 处理通配符边界
+	if strings.Contains(s, "extends ") {
+		parts := strings.Split(s, "extends ")
+		s = parts[len(parts)-1]
+	} else if strings.Contains(s, "super ") {
+		parts := strings.Split(s, "super ")
+		s = parts[len(parts)-1]
+	}
+
+	// 2. 移除泛型起始及其后的所有内容
 	s = strings.Split(s, "<")[0]
+
+	// 3. 核心修复：移除末尾可能残留的泛型闭合符、逗号或数组括号残留
+	// 使用 TrimRight 移除所有在类型解析中可能残留的“垃圾”字符
+	s = strings.TrimRight(s, "> ,[]")
+
 	return strings.TrimSpace(s)
 }
 
@@ -447,7 +463,6 @@ func (e *Extractor) extractStructural(fCtx *core.FileContext, gCtx *core.GlobalC
 				// 参数处理
 				if params, ok := elem.Extra.Mores[MethodParameters].([]string); ok {
 					for i, rawParam := range params {
-						// ... 保持原有解析逻辑 ...
 						parts := strings.Fields(rawParam)
 						if len(parts) == 0 {
 							continue
@@ -512,6 +527,38 @@ func (e *Extractor) extractStructural(fCtx *core.FileContext, gCtx *core.GlobalC
 					}
 				}
 			}
+
+			// --- 泛型实参提取 (TypeArg) ---
+			var rawTypeStrings []string
+
+			// 1. 字段类型
+			if vt, ok := elem.Extra.Mores[FieldType].(string); ok {
+				rawTypeStrings = append(rawTypeStrings, vt)
+			}
+			// 2. 变量类型
+			if vt, ok := elem.Extra.Mores[VariableType].(string); ok {
+				rawTypeStrings = append(rawTypeStrings, vt)
+			}
+			// 3. 方法返回类型
+			if rt, ok := elem.Extra.Mores[MethodReturnType].(string); ok {
+				rawTypeStrings = append(rawTypeStrings, rt)
+			}
+			// 4. 方法参数类型 (这里针对结构化定义的参数)
+			if pts, ok := elem.Extra.Mores[MethodParameters].([]string); ok {
+				for _, p := range pts {
+					parts := strings.Fields(p)
+					if len(parts) >= 2 {
+						// 取倒数第二个作为类型名
+						rawTypeStrings = append(rawTypeStrings, parts[len(parts)-2])
+					}
+				}
+			}
+
+			// 处理 TypeArg
+			for _, rt := range rawTypeStrings {
+				// 调用递归提取函数
+				rels = append(rels, e.collectAllTypeArgs(rt, elem, gCtx, fCtx)...)
+			}
 		}
 	}
 	return rels
@@ -533,4 +580,72 @@ func (e *Extractor) mapElementKindToAnnotationTarget(elem *model.CodeElement) st
 		return "LOCAL_VARIABLE"
 	}
 	return "UNKNOWN"
+}
+
+// extractTypeArgs 解析类型字符串中的泛型实参, (eg,: "Map<String, Integer>" 返回 ["String", "Integer"])
+func (e *Extractor) parseTypeArgs(rawType string) []string {
+	start := strings.Index(rawType, "<")
+	end := strings.LastIndex(rawType, ">")
+	if start == -1 || end == -1 || start >= end {
+		return nil
+	}
+
+	content := rawType[start+1 : end]
+	var args []string
+	bracketLevel := 0
+	current := strings.Builder{}
+
+	// 处理带逗号的嵌套，如 Map<String, List<Integer>>
+	for _, r := range content {
+		switch r {
+		case '<':
+			bracketLevel++
+			current.WriteRune(r)
+		case '>':
+			bracketLevel--
+			current.WriteRune(r)
+		case ',':
+			if bracketLevel == 0 {
+				args = append(args, strings.TrimSpace(current.String()))
+				current.Reset()
+			} else {
+				current.WriteRune(r)
+			}
+		default:
+			current.WriteRune(r)
+		}
+	}
+	if current.Len() > 0 {
+		args = append(args, strings.TrimSpace(current.String()))
+	}
+	return args
+}
+
+// collectAllTypeArgs 递归提取所有层级的泛型实参
+func (e *Extractor) collectAllTypeArgs(rt string, source *model.CodeElement, gCtx *core.GlobalContext, fCtx *core.FileContext) []*model.DependencyRelation {
+	var rels []*model.DependencyRelation
+	if !strings.Contains(rt, "<") {
+		return nil
+	}
+
+	args := e.parseTypeArgs(rt)
+	for i, arg := range args {
+		// 1. 生成当前层的关系
+		rels = append(rels, &model.DependencyRelation{
+			Type:   model.TypeArg,
+			Source: source,
+			Target: e.quickResolve(e.clean(arg), model.Class, gCtx, fCtx),
+			Mores: map[string]interface{}{
+				RelTypeArgIndex: i,
+				RelRawText:      arg,
+				RelAstKind:      "type_arguments",
+			},
+		})
+
+		// 2. 递归处理下一层 (例如 Map<String, Object> 里的 String 和 Object)
+		if strings.Contains(arg, "<") {
+			rels = append(rels, e.collectAllTypeArgs(arg, source, gCtx, fCtx)...)
+		}
+	}
+	return rels
 }

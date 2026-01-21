@@ -65,6 +65,7 @@ const (
 	RelThrowIndex            = "java.rel.throw.index"             // 在 throws 声明列表中的位置索引 (从 0 开始)
 	RelParameterIndex        = "java.rel.parameter.index"         // 参数在方法签名中的从 0 开始的索引位置
 	RelReturnIsPrimitive     = "java.rel.return.is_primitive"     // 返回类型是否为 Java 基础类型 (int, byte, etc.)
+	RelTypeArgIndex          = "java.rel.type_arg.index"          // 泛型参数的位置索引 (0 表示第一个参数)
 )
 
 // --- Extended属性 (这里是定义的一些属性增强，建议按业务需求定制提取)  ---
@@ -129,7 +130,6 @@ const (
 	RelReturnDimensions          = "java.rel.return.dimensions"            // 返回数组的维度 (如 byte[][] 为 2)
 	RelReturnHasTypeArguments    = "java.rel.return.has_type_arguments"    // 返回类型是否携带泛型参数 (如 List<String>)
 	RelTypeArgParentType         = "java.rel.type_arg.parent_type"         // 包含该泛型参数的主类型名 (如 List, Map)
-	RelTypeArgIndex              = "java.rel.type_arg.index"               // 泛型参数的位置索引 (0 表示第一个参数)
 	RelTypeArgDepth              = "java.rel.type_arg.depth"               // 嵌套深度 (0 为直接参数，1 为参数的参数，以此类推)
 	RelTypeArgIsWildcard         = "java.rel.type_arg.is_wildcard"         // 是否为通配符 (如 ?, ? extends T)
 	RelTypeArgWildcardKind       = "java.rel.type_arg.wildcard_kind"       // 通配符种类 (如 "extends", "super", "unbounded")
