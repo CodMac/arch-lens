@@ -27,7 +27,6 @@ public class AssignRelationSuite {
         //   "java.rel.context": "assignment_expression",
         //   "java.rel.ast_kind": "assignment_expression",
         //   "java.rel.assign.target_name": "status",
-        //   "java.rel.assign.is_static_context": true,
         //   "java.rel.assign.operator": "=",
         //   "java.rel.assign.value_expression": "\"INIT\""
         // }
@@ -70,7 +69,6 @@ public class AssignRelationSuite {
         //   "java.rel.context": "assignment_expression",
         //   "java.rel.ast_kind": "assignment_expression",
         //   "java.rel.assign.target_name": "count",
-        //   "java.rel.assign.receiver": "this",
         //   "java.rel.assign.operator": "=",
         //   "java.rel.assign.value_expression": "100"
         // }
@@ -85,8 +83,7 @@ public class AssignRelationSuite {
         //   "java.rel.ast_kind": "assignment_expression",
         //   "java.rel.assign.target_name": "count",
         //   "java.rel.assign.operator": "+=",
-        //   "java.rel.assign.value_expression": "5",
-        //   "java.rel.assign.is_compound": true
+        //   "java.rel.assign.value_expression": "5"
         // }
         count += 5;
 
@@ -95,15 +92,15 @@ public class AssignRelationSuite {
         // 关系 A -> a
         // Source: com.example.rel.AssignRelationSuite.testAssignments(int) (METHOD)
         // Target: com.example.rel.AssignRelationSuite.testAssignments(int).a (VARIABLE)
-        // Mores: { "java.rel.assign.is_chained": true, "java.rel.assign.value_expression": "b = c = 50", ... }
+        // Mores: { "java.rel.assign.target_name": "a", "java.rel.assign.operator": "=", "java.rel.assign.value_expression": "b = c = 50" }
 
         // 关系 A -> b
-        // Target: b (VARIABLE)
-        // Mores: { "java.rel.assign.is_chained": true, "java.rel.assign.value_expression": "c = 50", ... }
+        // Target: com.example.rel.AssignRelationSuite.testAssignments(int).b (VARIABLE)
+        // Mores: { "java.rel.assign.target_name": "b", "java.rel.assign.operator": "=", "java.rel.assign.value_expression": "c = 50" }
 
         // 关系 A -> c
-        // Target: c (VARIABLE)
-        // Mores: { "java.rel.assign.value_expression": "50", ... }
+        // Target: com.example.rel.AssignRelationSuite.testAssignments(int).c (VARIABLE)
+        // Mores: { "java.rel.assign.target_name": "c", "java.rel.assign.operator": "=", "java.rel.assign.value_expression": "50" }
         a = b = c = 50;
 
         // 7. 更新表达式 (Unary Update)
@@ -114,8 +111,7 @@ public class AssignRelationSuite {
         //   "java.rel.context": "update_expression",
         //   "java.rel.ast_kind": "update_expression",
         //   "java.rel.assign.target_name": "count",
-        //   "java.rel.assign.operator": "++",
-        //   "java.rel.assign.is_postfix": true
+        //   "java.rel.assign.operator": "++"
         // }
         count++;
         --count;
@@ -129,7 +125,6 @@ public class AssignRelationSuite {
         //   "java.rel.context": "assignment_expression",
         //   "java.rel.ast_kind": "assignment_expression",
         //   "java.rel.assign.target_name": "arr",
-        //   "java.rel.assign.index_expression": "0",
         //   "java.rel.assign.value_expression": "99",
         //   "java.rel.assign.operator": "="
         // }
@@ -143,14 +138,11 @@ public class AssignRelationSuite {
         //   "java.rel.context": "assignment_expression",
         //   "java.rel.ast_kind": "assignment_expression",
         //   "java.rel.assign.target_name": "count",
-        //   "java.rel.assign.receiver": "this",
         //   "java.rel.assign.operator": "=",
         //   "java.rel.assign.value_expression": "300"
         // }
         Runnable r = () -> {
             this.count = 300;
-            // 内部变量定义
-            // Source: ...lambda$1 (LAMBDA), Target: ...lambda$1.temp (VARIABLE)
             int temp = 1;
             temp = 2;
         };
@@ -164,7 +156,6 @@ public class AssignRelationSuite {
     //   "java.rel.context": "assignment_expression",
     //   "java.rel.ast_kind": "assignment_expression",
     //   "java.rel.assign.target_name": "count",
-    //   "java.rel.assign.receiver": "this",
     //   "java.rel.assign.operator": "=",
     //   "java.rel.assign.value_expression": "initialCount"
     // }

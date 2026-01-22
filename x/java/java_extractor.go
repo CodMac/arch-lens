@@ -166,9 +166,40 @@ func (e *Extractor) enrichAnnotationCore(rel *model.DependencyRelation) {
 	rel.Target.QualifiedName = strings.Split(rel.Target.QualifiedName, "(")[0]
 }
 
-func (e *Extractor) enrichAssignCore(rel *model.DependencyRelation, node, stmt *sitter.Node, src []byte) {
-	if node != nil {
-		rel.Mores[RelAssignTargetName] = node.Utf8Text(src)
+func (e *Extractor) enrichAssignCore(rel *model.DependencyRelation, capNode, stmtNode *sitter.Node, src []byte) {
+	rel.Mores[RelAstKind] = stmtNode.Kind()
+	rel.Mores[RelAssignTargetName] = capNode.Utf8Text(src)
+
+	switch stmtNode.Kind() {
+	case "variable_declarator":
+		rel.Mores[RelAssignIsInitializer] = true
+		rel.Mores[RelAssignOperator] = "="
+		// 显式查找 value 节点
+		for i := 0; i < int(stmtNode.ChildCount()); i++ {
+			child := stmtNode.Child(uint(i))
+			if stmtNode.FieldNameForChild(uint32(i)) == "value" {
+				rel.Mores[RelAssignValueExpression] = child.Utf8Text(src)
+				break
+			}
+		}
+	case "assignment_expression":
+		// 提取操作符 (如 =, +=, -=)
+		for i := 0; i < int(stmtNode.ChildCount()); i++ {
+			child := stmtNode.Child(uint(i))
+			fieldName := stmtNode.FieldNameForChild(uint32(i))
+			if fieldName == "operator" {
+				rel.Mores[RelAssignOperator] = child.Utf8Text(src)
+			} else if fieldName == "right" {
+				rel.Mores[RelAssignValueExpression] = child.Utf8Text(src)
+			}
+		}
+	case "update_expression":
+		raw := stmtNode.Utf8Text(src)
+		if strings.Contains(raw, "++") {
+			rel.Mores[RelAssignOperator] = "++"
+		} else {
+			rel.Mores[RelAssignOperator] = "--"
+		}
 	}
 }
 
@@ -271,7 +302,7 @@ func (e *Extractor) discoverActionRelations(fCtx *core.FileContext, gCtx *core.G
 			if !strings.HasSuffix(capName, "_target") {
 				continue
 			}
-			relType, kind, stmtNode := e.mapAction(capName, capturedNode)
+			relType, kind, stmtNode := e.mapAction(capName, &cap.Node)
 			if relType == "" {
 				continue
 			}
@@ -336,24 +367,32 @@ func (e *Extractor) getRawTypesForTypeArgs(elem *model.CodeElement) (res []strin
 }
 
 func (e *Extractor) mapAction(capName string, node *sitter.Node) (model.DependencyType, model.ElementKind, *sitter.Node) {
-	var relType model.DependencyType
-	var kind model.ElementKind
 	switch capName {
-	case "call_target", "ref_target", "explicit_constructor_stmt":
-		relType, kind = model.Call, model.Method
+	case "call_target", "ref_target":
+		return model.Call, model.Method, node
 	case "create_target":
-		relType, kind = model.Create, model.Class
+		return model.Create, model.Class, node
 	case "assign_target":
-		relType, kind = model.Assign, model.Variable
+		// 关键：必须能向上找到这三种表达式之一，才能算作有效的赋值动作
+		stmtNode := e.findNearestKind(node, "assignment_expression", "variable_declarator", "update_expression")
+		if stmtNode != nil {
+			return model.Assign, model.Variable, stmtNode
+		}
+		// 如果找不到（这通常不应该发生），降级返回自身
+		return model.Assign, model.Variable, node
+
+	case "update_stmt": // 自增自减
+		return model.Assign, model.Variable, node
+
 	case "use_field_target":
-		relType, kind = model.Use, model.Field
+		return model.Use, model.Field, node
 	case "throw_target":
 		return model.Throw, model.Class, e.findThrowStatement(node)
+	case "explicit_constructor_stmt":
+		return model.Call, model.Method, node
 	default:
 		return "", model.Unknown, nil
 	}
-
-	return relType, kind, node
 }
 
 func (e *Extractor) determinePreciseSource(n *sitter.Node, fCtx *core.FileContext, gCtx *core.GlobalContext) *model.CodeElement {
@@ -364,6 +403,10 @@ func (e *Extractor) determinePreciseSource(n *sitter.Node, fCtx *core.FileContex
 		switch curr.Kind() {
 		case "method_declaration", "constructor_declaration":
 			k = model.Method
+		case "static_initializer":
+			k = model.ScopeBlock // 对应 $static$1
+		case "lambda_expression":
+			k = model.Lambda // 对应 lambda$1
 		case "field_declaration":
 			k = model.Field
 		case "variable_declarator":
