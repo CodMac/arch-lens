@@ -89,11 +89,78 @@ func (e *Extractor) enrichCallCore(rel *model.DependencyRelation, node *sitter.N
 	if node == nil {
 		return
 	}
-	callNode := e.findNearestKind(node, "method_invocation", "method_reference", "explicit_constructor_invocation")
+	// 1. 定位真实的调用节点
+	callNode := e.findNearestKind(node, "method_invocation", "method_reference", "explicit_constructor_invocation", "object_creation_expression")
 	if callNode == nil {
 		return
 	}
+
 	rel.Mores[RelAstKind] = callNode.Kind()
+
+	// 2. 核心逻辑：区分调用类型并提取 Receiver/Static/Constructor 属性
+	switch callNode.Kind() {
+	case "method_invocation":
+		// 查找执行对象 (e.g., "System" in "System.out.println")
+		if objectNode := callNode.ChildByFieldName("object"); objectNode != nil {
+			receiverText := objectNode.Utf8Text(src)
+			rel.Mores[RelCallReceiver] = receiverText
+
+			// 静态调用判断逻辑 (非精准，但在 collector 补全前作为关键参考)
+			// 如果 receiver 是首字母大写的（如 System），则标记为 ReceiverType 并设为 Static
+			if e.isPotentialClassName(receiverText) {
+				rel.Mores[RelCallIsStatic] = true
+				rel.Mores[RelCallReceiverType] = receiverText
+			} else {
+				rel.Mores[RelCallIsStatic] = false
+			}
+
+			// 链式调用判断：如果 object 节点本身又是另一种调用
+			if objectNode.Kind() == "method_invocation" || objectNode.Kind() == "object_creation_expression" {
+				rel.Mores[RelCallIsChained] = true
+			}
+		} else {
+			// 无 object，隐式 this 调用
+			rel.Mores[RelCallReceiver] = "this"
+			rel.Mores[RelCallIsStatic] = false
+		}
+
+	case "object_creation_expression":
+		rel.Mores[RelCallIsConstructor] = true
+		if typeNode := callNode.ChildByFieldName("type"); typeNode != nil {
+			rel.Mores[RelCallReceiverType] = typeNode.Utf8Text(src)
+		}
+
+	case "method_reference":
+		rel.Mores[RelCallIsFunctional] = true
+		if objectNode := callNode.ChildByFieldName("object"); objectNode != nil {
+			rel.Mores[RelCallReceiver] = objectNode.Utf8Text(src)
+		}
+
+	case "explicit_constructor_invocation":
+		// 处理 super() 或 this()
+		rel.Mores[RelCallIsConstructor] = true
+		if callNode.ChildCount() > 0 {
+			rel.Mores[RelCallReceiver] = callNode.Child(0).Utf8Text(src) // "super" 或 "this"
+		}
+	}
+
+	// 3. 改进 EnclosingMethod (溯源) 截断逻辑
+	if rel.Source != nil {
+		qn := rel.Source.QualifiedName
+		if rel.Source.Kind == model.Lambda || strings.Contains(qn, "$") || strings.Contains(qn, ".anonymousClass") {
+			// 向上寻找最近的一个真正的 METHOD (即不含 lambda 或 anonymousClass 的部分)
+			// 简单处理：截断到第一个括号或特殊标记前
+			stopMarkers := []string{".lambda", ".anonymousClass", "$", ".block"}
+			baseQN := qn
+			for _, marker := range stopMarkers {
+				if idx := strings.Index(baseQN, marker); idx != -1 {
+					baseQN = baseQN[:idx]
+				}
+			}
+			// 如果截断后末尾带括号，保留它以对齐 collector 的方法命名规范
+			rel.Mores[RelCallEnclosingMethod] = baseQN
+		}
+	}
 }
 
 func (e *Extractor) enrichCreateCore(rel *model.DependencyRelation, node, stmt *sitter.Node, src []byte) {
@@ -580,4 +647,12 @@ func (e *Extractor) collectAllTypeArgs(rt string, source *model.CodeElement, gCt
 		}
 	}
 	return rels
+}
+
+func (e *Extractor) isPotentialClassName(s string) bool {
+	if len(s) == 0 || strings.Contains(s, "(") {
+		return false
+	}
+	firstChar := s[0]
+	return firstChar >= 'A' && firstChar <= 'Z'
 }

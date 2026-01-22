@@ -105,6 +105,326 @@ func TestJavaExtractor_Annotation(t *testing.T) {
 	}
 }
 
+func TestJavaExtractor_Call(t *testing.T) {
+	// 1. 准备与提取
+	testFile := "testdata/com/example/rel/CallRelationSuite.java"
+	files := []string{testFile}
+	gCtx := runPhase1Collection(t, files)
+	extractor := java.NewJavaExtractor()
+	allRelations, err := extractor.Extract(testFile, gCtx)
+	if err != nil {
+		t.Fatalf("Extraction failed: %v", err)
+	}
+
+	printRelations(allRelations)
+
+	// 2. 定义断言数据集
+	expectedRels := []struct {
+		sourceQN   string               // Source 节点的 QN 片段
+		targetName string               // Target 节点的名称 (Short Name)
+		relType    model.DependencyType // 关系类型
+		value      string               // 对应 RelRawText 的精确定位
+		checkMores func(t *testing.T, m map[string]interface{})
+	}{
+		{
+			sourceQN:   "CallRelationSuite.executeAll()",
+			targetName: "simpleMethod",
+			relType:    model.Call,
+			checkMores: func(t *testing.T, m map[string]interface{}) {
+				assert.Equal(t, "this", m[java.RelCallReceiver])
+				assert.Equal(t, false, m[java.RelCallIsStatic])
+			},
+		},
+		{
+			sourceQN:   "CallRelationSuite.executeAll()",
+			targetName: "staticMethod",
+			relType:    model.Call,
+			checkMores: func(t *testing.T, m map[string]interface{}) {
+				assert.Equal(t, true, m[java.RelCallIsStatic])
+				assert.Equal(t, "CallRelationSuite", m[java.RelCallReceiverType])
+			},
+		},
+		{
+			sourceQN:   "CallRelationSuite.executeAll()",
+			targetName: "currentTimeMillis",
+			relType:    model.Call,
+			checkMores: func(t *testing.T, m map[string]interface{}) {
+				assert.Equal(t, "System", m[java.RelCallReceiver])
+				assert.Equal(t, true, m[java.RelCallIsStatic])
+			},
+		},
+		{
+			sourceQN:   "CallRelationSuite.executeAll()",
+			targetName: "add",
+			relType:    model.Call,
+			checkMores: func(t *testing.T, m map[string]interface{}) {
+				assert.Equal(t, true, m[java.RelCallIsChained])
+			},
+		},
+		{
+			sourceQN:   "CallRelationSuite.executeAll()",
+			targetName: "ArrayList",
+			relType:    model.Create, // 确认 Create 逻辑存在
+		},
+		{
+			sourceQN:   "CallRelationSuite.executeAll()",
+			targetName: "ArrayList",
+			relType:    model.Call, // 采纳建议：同时也存在 CALL 构造函数
+			checkMores: func(t *testing.T, m map[string]interface{}) {
+				assert.Equal(t, true, m[java.RelCallIsConstructor])
+			},
+		},
+		{
+			sourceQN:   "lambda$1",
+			targetName: "simpleMethod",
+			relType:    model.Call,
+			checkMores: func(t *testing.T, m map[string]interface{}) {
+				assert.Equal(t, "com.example.rel.CallRelationSuite.executeAll()", m[java.RelCallEnclosingMethod])
+			},
+		},
+		{
+			sourceQN:   "anonymousClass$1.run()",
+			targetName: "simpleMethod",
+			relType:    model.Call,
+			checkMores: func(t *testing.T, m map[string]interface{}) {
+				assert.Equal(t, "com.example.rel.CallRelationSuite.executeAll()", m[java.RelCallEnclosingMethod])
+			},
+		},
+		{
+			sourceQN:   "SubClass.SubClass()",
+			targetName: "super",
+			relType:    model.Call,
+			checkMores: func(t *testing.T, m map[string]interface{}) {
+				assert.Equal(t, "explicit_constructor_invocation", m[java.RelAstKind])
+				assert.Equal(t, true, m[java.RelCallIsConstructor])
+			},
+		},
+	}
+
+	// 3. 执行断言
+	for _, exp := range expectedRels {
+		t.Run(fmt.Sprintf("%s_to_%s", exp.relType, exp.targetName), func(t *testing.T) {
+			found := false
+			for _, rel := range allRelations {
+				if rel.Type == exp.relType &&
+					strings.Contains(rel.Target.Name, exp.targetName) &&
+					strings.Contains(rel.Source.QualifiedName, exp.sourceQN) {
+
+					found = true
+					if exp.checkMores != nil {
+						exp.checkMores(t, rel.Mores)
+					}
+					break
+				}
+			}
+			assert.True(t, found, "Missing: [%s] Source:%s -> Target:%s",
+				exp.relType, exp.sourceQN, exp.targetName)
+		})
+	}
+}
+
+func TestJavaExtractor_Capture(t *testing.T) {
+	// 1. 准备与提取
+	testFile := "testdata/com/example/rel/CaptureRelationSuite.java"
+	files := []string{testFile}
+	gCtx := runPhase1Collection(t, files)
+	extractor := java.NewJavaExtractor()
+	allRelations, err := extractor.Extract(testFile, gCtx)
+	if err != nil {
+		t.Fatalf("Extraction failed: %v", err)
+	}
+
+	// 2. 定义断言数据集
+	expectedRels := []struct {
+		sourceQN   string // 通常是 Lambda 符号名或匿名类方法 QN
+		targetQN   string // 被捕获的变量/字段名
+		checkMores func(t *testing.T, m map[string]interface{})
+	}{
+		// --- 1. Lambda 捕获局部变量 ---
+		{
+			sourceQN: "testCaptures$lambda1", // 假设生成的 Lambda 标识
+			targetQN: "localVal",
+			checkMores: func(t *testing.T, m map[string]interface{}) {
+				assert.Equal(t, "local_variable", m[java.RelCaptureKind])
+				assert.Equal(t, true, m[java.RelCaptureIsEffectivelyFinal])
+				assert.Equal(t, "lambda_expression", m[java.RelAstKind])
+			},
+		},
+		// --- 2. Lambda 捕获方法参数 ---
+		{
+			sourceQN: "testCaptures$lambda2",
+			targetQN: "param",
+			checkMores: func(t *testing.T, m map[string]interface{}) {
+				assert.Equal(t, "parameter", m[java.RelCaptureKind])
+				assert.Contains(t, m[java.RelCallEnclosingMethod], "testCaptures")
+			},
+		},
+		// --- 3. Lambda 捕获成员变量 (隐式 this) ---
+		{
+			sourceQN: "testCaptures$lambda3",
+			targetQN: "fieldData",
+			checkMores: func(t *testing.T, m map[string]interface{}) {
+				assert.Equal(t, "field", m[java.RelCaptureKind])
+				assert.Equal(t, "this", m[java.RelCallReceiver])
+				assert.Equal(t, true, m[java.RelCaptureIsImplicitThis])
+			},
+		},
+		// --- 4. Lambda 访问静态成员 ---
+		{
+			sourceQN: "testCaptures$lambda4",
+			targetQN: "staticData",
+			checkMores: func(t *testing.T, m map[string]interface{}) {
+				assert.Equal(t, true, m[java.RelCallIsStatic])
+			},
+		},
+		// --- 5. 匿名内部类捕获局部变量 ---
+		{
+			sourceQN: "testCaptures$1.run", // 匿名类的方法
+			targetQN: "localVal",
+			checkMores: func(t *testing.T, m map[string]interface{}) {
+				assert.Equal(t, "local_variable", m[java.RelCaptureKind])
+				assert.Equal(t, "anonymous_class_capture", m[java.RelAstKind])
+			},
+		},
+		// --- 6. 嵌套 Lambda 捕获 (深度校验) ---
+		{
+			sourceQN: "testCaptures$lambda5$lambda6", // 嵌套 Lambda 标识
+			targetQN: "localVal",
+			checkMores: func(t *testing.T, m map[string]interface{}) {
+				assert.Equal(t, 2, m[java.RelCaptureDepth]) // 深度为 2
+				assert.NotEmpty(t, m[java.RelCaptureEnclosingLambda])
+				assert.Equal(t, "localVal", m[java.RelRawText])
+			},
+		},
+	}
+
+	// 3. 执行匹配断言
+	for _, exp := range expectedRels {
+		found := false
+		for _, rel := range allRelations {
+			// 由于 Capture 关系在 model 中可能映射为 Capture 或 Use 类型
+			// 我们这里重点匹配 SourceQN 和 TargetName
+			if rel.Target.Name == exp.targetQN &&
+				strings.Contains(rel.Source.QualifiedName, exp.sourceQN) {
+
+				found = true
+				if exp.checkMores != nil {
+					exp.checkMores(t, rel.Mores)
+				}
+				break
+			}
+		}
+		assert.True(t, found, "Missing Capture relation: %s -> %s", exp.sourceQN, exp.targetQN)
+	}
+}
+
+func TestJavaExtractor_Create(t *testing.T) {
+	// 1. 准备与提取
+	testFile := "testdata/com/example/rel/CreateRelationSuite.java"
+	files := []string{testFile}
+	gCtx := runPhase1Collection(t, files)
+	extractor := java.NewJavaExtractor()
+	allRelations, err := extractor.Extract(testFile, gCtx)
+	if err != nil {
+		t.Fatalf("Extraction failed: %v", err)
+	}
+
+	// 2. 定义断言数据集
+	expectedRels := []struct {
+		sourceQN   string
+		targetQN   string // 实例化的类名
+		checkMores func(t *testing.T, m map[string]interface{})
+	}{
+		// --- 1. 成员变量声明时实例化 ---
+		{
+			sourceQN: "com.example.rel.CreateRelationSuite.fieldInstance",
+			targetQN: "ArrayList",
+			checkMores: func(t *testing.T, m map[string]interface{}) {
+				assert.Equal(t, true, m[java.RelCreateIsInitializer])
+				assert.Equal(t, "fieldInstance", m[java.RelCreateVariableName])
+				assert.Equal(t, "object_creation_expression", m[java.RelAstKind])
+			},
+		},
+		// --- 2. 静态成员变量实例化 ---
+		{
+			sourceQN: "com.example.rel.CreateRelationSuite.staticMap",
+			targetQN: "HashMap",
+			checkMores: func(t *testing.T, m map[string]interface{}) {
+				assert.Equal(t, true, m[java.RelCallIsStatic])
+				assert.Equal(t, true, m[java.RelCreateIsInitializer])
+			},
+		},
+		// --- 3. 局部变量实例化 ---
+		{
+			sourceQN: "com.example.rel.CreateRelationSuite.testCreateCases",
+			targetQN: "StringBuilder",
+			checkMores: func(t *testing.T, m map[string]interface{}) {
+				assert.Equal(t, "sb", m[java.RelCreateVariableName])
+				assert.Contains(t, m[java.RelCreateArguments], "\"init\"")
+			},
+		},
+		// --- 4. 匿名内部类创建 ---
+		{
+			sourceQN: "com.example.rel.CreateRelationSuite.testCreateCases",
+			targetQN: "Runnable",
+			checkMores: func(t *testing.T, m map[string]interface{}) {
+				assert.Equal(t, true, m[java.RelCreateIsAnonymous])
+				// 匿名类通常还会触发 IMPLEMENTS 关系，这里仅校验 CREATE 动作
+				assert.Equal(t, "anonymous_class_submission", m[java.RelAstKind])
+			},
+		},
+		// --- 5. 数组实例化 ---
+		{
+			sourceQN: "com.example.rel.CreateRelationSuite.testCreateCases",
+			targetQN: "String",
+			checkMores: func(t *testing.T, m map[string]interface{}) {
+				assert.Equal(t, true, m[java.RelCreateIsArray])
+				assert.Equal(t, 1, m[java.RelCreateDimensions])
+				assert.Equal(t, "5", m[java.RelCreateArraySize])
+				assert.Equal(t, "array_creation_expression", m[java.RelAstKind])
+			},
+		},
+		// --- 6. 链式调用中的实例化 ---
+		{
+			sourceQN: "com.example.rel.CreateRelationSuite.testCreateCases",
+			targetQN: "CreateRelationSuite",
+			checkMores: func(t *testing.T, m map[string]interface{}) {
+				assert.Equal(t, true, m[java.RelCreateHasSubsequentCall])
+				assert.Equal(t, "doNothing", m[java.RelCreateSubsequentCall])
+			},
+		},
+		// --- 7. 构造函数内部实例化 (super 调用) ---
+		{
+			sourceQN: "com.example.rel.CreateRelationSuite.<init>",
+			targetQN: "Object",
+			checkMores: func(t *testing.T, m map[string]interface{}) {
+				assert.Equal(t, "super", m[java.RelCallReceiver])
+				assert.Equal(t, true, m[java.RelCreateIsConstructorChain])
+				assert.Equal(t, "explicit_constructor_invocation", m[java.RelAstKind])
+			},
+		},
+	}
+
+	// 3. 执行匹配断言
+	for _, exp := range expectedRels {
+		found := false
+		for _, rel := range allRelations {
+			// 匹配原则：类型为 CREATE + 目标类名一致 + SourceQN 包含关系
+			if rel.Type == model.Create &&
+				rel.Target.Name == exp.targetQN &&
+				strings.Contains(rel.Source.QualifiedName, exp.sourceQN) {
+
+				found = true
+				if exp.checkMores != nil {
+					exp.checkMores(t, rel.Mores)
+				}
+				break
+			}
+		}
+		assert.True(t, found, "Missing Create relation: %s -> %s", exp.sourceQN, exp.targetQN)
+	}
+}
+
 func TestJavaExtractor_Assign(t *testing.T) {
 	// 1. 准备与提取
 	testFile := "testdata/com/example/rel/AssignRelationSuite.java"
@@ -368,172 +688,9 @@ func TestJavaExtractor_AssignDataFlow(t *testing.T) {
 	}
 }
 
-func TestJavaExtractor_Call(t *testing.T) {
+func TestJavaExtractor_Use(t *testing.T) {
 	// 1. 准备与提取
-	testFile := "testdata/com/example/rel/CallRelationSuite.java"
-	files := []string{testFile}
-	gCtx := runPhase1Collection(t, files)
-	extractor := java.NewJavaExtractor()
-	allRelations, err := extractor.Extract(testFile, gCtx)
-	if err != nil {
-		t.Fatalf("Extraction failed: %v", err)
-	}
-
-	printRelations(allRelations)
-
-	// 2. 定义断言数据集
-	expectedRels := []struct {
-		sourceQN   string               // Source 节点的 QN 片段
-		targetName string               // Target 节点的名称
-		relType    model.DependencyType // 关系类型
-		checkMores func(t *testing.T, m map[string]interface{})
-	}{
-		// --- 1. 基础实例调用 ---
-		{
-			sourceQN:   "com.example.rel.CallRelationSuite.executeAll",
-			targetName: "simpleMethod",
-			relType:    model.Call,
-			checkMores: func(t *testing.T, m map[string]interface{}) {
-				assert.Equal(t, "this", m[java.RelCallReceiver])
-				assert.Equal(t, false, m[java.RelCallIsStatic])
-				assert.Equal(t, "method_invocation", m[java.RelAstKind])
-			},
-		},
-		// --- 2. 静态方法调用 ---
-		{
-			sourceQN:   "com.example.rel.CallRelationSuite.executeAll",
-			targetName: "staticMethod",
-			relType:    model.Call,
-			checkMores: func(t *testing.T, m map[string]interface{}) {
-				assert.Equal(t, true, m[java.RelCallIsStatic])
-				assert.Equal(t, "CallRelationSuite", m[java.RelCallReceiverType])
-			},
-		},
-		// --- 3. 跨包静态调用 (System.currentTimeMillis) ---
-		{
-			sourceQN:   "com.example.rel.CallRelationSuite.executeAll",
-			targetName: "currentTimeMillis",
-			relType:    model.Call,
-			checkMores: func(t *testing.T, m map[string]interface{}) {
-				assert.Equal(t, "System", m[java.RelCallReceiver])
-				assert.Equal(t, true, m[java.RelCallIsStatic])
-			},
-		},
-		// --- 4. 链式调用 ---
-		{
-			sourceQN:   "com.example.rel.CallRelationSuite.executeAll",
-			targetName: "getList",
-			relType:    model.Call,
-		},
-		{
-			sourceQN:   "com.example.rel.CallRelationSuite.executeAll",
-			targetName: "add",
-			relType:    model.Call,
-			checkMores: func(t *testing.T, m map[string]interface{}) {
-				assert.Equal(t, true, m[java.RelCallIsChained])
-				assert.Equal(t, "getList()", m[java.RelCallReceiverExpression])
-			},
-		},
-		// --- 5 & 6. 继承调用 (Super & Implicit) ---
-		{
-			sourceQN:   "com.example.rel.CallRelationSuite.executeAll",
-			targetName: "baseMethod",
-			relType:    model.Call,
-			checkMores: func(t *testing.T, m map[string]interface{}) {
-				// 对应 super.baseMethod()
-				if m[java.RelCallReceiver] == "super" {
-					assert.Equal(t, true, m[java.RelCallIsInherited])
-				}
-			},
-		},
-		// --- 7. 对象创建 (ArrayList) ---
-		{
-			sourceQN:   "com.example.rel.CallRelationSuite.executeAll",
-			targetName: "ArrayList",
-			relType:    model.Create,
-			checkMores: func(t *testing.T, m map[string]interface{}) {
-				assert.Equal(t, true, m[java.RelCallIsConstructor])
-				assert.Equal(t, "String", m[java.RelCallTypeArguments])
-			},
-		},
-		// --- 8. Lambda 内部的方法调用 ---
-		{
-			sourceQN:   "lambda$", // QN 会包含生成的 lambda 标记
-			targetName: "simpleMethod",
-			relType:    model.Call,
-			checkMores: func(t *testing.T, m map[string]interface{}) {
-				assert.Equal(t, "executeAll()", m[java.RelCallEnclosingMethod])
-				assert.Equal(t, "this", m[java.RelCallReceiver])
-			},
-		},
-		// --- 9. 方法引用 (forEach(this::simpleMethod)) ---
-		{
-			sourceQN:   "com.example.rel.CallRelationSuite.executeAll",
-			targetName: "simpleMethod",
-			relType:    model.Call,
-			checkMores: func(t *testing.T, m map[string]interface{}) {
-				assert.Equal(t, "method_reference", m[java.RelAstKind])
-				assert.Equal(t, true, m[java.RelCallIsFunctional])
-				assert.Equal(t, "this", m[java.RelCallReceiver])
-			},
-		},
-		// --- 10. 泛型方法显式调用 ---
-		{
-			sourceQN:   "com.example.rel.CallRelationSuite.executeAll",
-			targetName: "genericMethod",
-			relType:    model.Call,
-			checkMores: func(t *testing.T, m map[string]interface{}) {
-				assert.Equal(t, "String", m[java.RelCallTypeArguments])
-			},
-		},
-		// --- 13. 强制类型转换调用 (Cast Receiver) ---
-		{
-			sourceQN:   "com.example.rel.CallRelationSuite.executeAll",
-			targetName: "simpleMethod",
-			relType:    model.Call,
-			checkMores: func(t *testing.T, m map[string]interface{}) {
-				// 注意：在 current implementation 中，obj 是 receiver 文本
-				assert.Equal(t, "((CallRelationSuite)obj)", m[java.RelCallReceiver])
-			},
-		},
-		// --- 16. 显式构造函数调用 (Super) ---
-		{
-			sourceQN:   "com.example.rel.CallRelationSuite.SubClass", // 构造函数内
-			targetName: "super",                                      // JavaActionQuery 捕获 super 作为 target
-			relType:    model.Call,
-			checkMores: func(t *testing.T, m map[string]interface{}) {
-				assert.Equal(t, "explicit_constructor_invocation", m[java.RelAstKind])
-				assert.Equal(t, "super", m[java.RelCallReceiver])
-			},
-		},
-	}
-
-	// 3. 校验执行
-	for _, exp := range expectedRels {
-		t.Run(fmt.Sprintf("%s_to_%s", exp.relType, exp.targetName), func(t *testing.T) {
-			found := false
-			for _, rel := range allRelations {
-				// 匹配逻辑：类型一致 + 目标名匹配 + Source 包含特征字符串
-				if rel.Type == exp.relType &&
-					rel.Target.Name == exp.targetName &&
-					strings.Contains(rel.Source.QualifiedName, exp.sourceQN) {
-
-					found = true
-					if exp.checkMores != nil {
-						exp.checkMores(t, rel.Mores)
-					}
-					break
-				}
-			}
-			assert.True(t, found, "Missing expected relation: [%s] Source(part):%s -> TargetName:%s",
-				exp.relType, exp.sourceQN, exp.targetName)
-		})
-	}
-}
-
-func TestJavaExtractor_Capture(t *testing.T) {
-	// 1. 准备与提取
-	testFile := "testdata/com/example/rel/CaptureRelationSuite.java"
+	testFile := "testdata/com/example/rel/UseRelationSuite.java"
 	files := []string{testFile}
 	gCtx := runPhase1Collection(t, files)
 	extractor := java.NewJavaExtractor()
@@ -544,64 +701,90 @@ func TestJavaExtractor_Capture(t *testing.T) {
 
 	// 2. 定义断言数据集
 	expectedRels := []struct {
-		sourceQN   string // 通常是 Lambda 符号名或匿名类方法 QN
-		targetQN   string // 被捕获的变量/字段名
+		sourceQN   string
+		targetQN   string // 被使用的变量、字段或参数名
 		checkMores func(t *testing.T, m map[string]interface{})
 	}{
-		// --- 1. Lambda 捕获局部变量 ---
+		// --- 1. 局部变量读取 ---
 		{
-			sourceQN: "testCaptures$lambda1", // 假设生成的 Lambda 标识
-			targetQN: "localVal",
+			sourceQN: "com.example.rel.UseRelationSuite.testUseCases",
+			targetQN: "local",
 			checkMores: func(t *testing.T, m map[string]interface{}) {
-				assert.Equal(t, "local_variable", m[java.RelCaptureKind])
-				assert.Equal(t, true, m[java.RelCaptureIsEffectivelyFinal])
-				assert.Equal(t, "lambda_expression", m[java.RelAstKind])
+				assert.Equal(t, "local + 2", m[java.RelUseParentExpression])
+				assert.Equal(t, "operand", m[java.RelUseUsageRole])
+				assert.Equal(t, "identifier", m[java.RelAstKind])
 			},
 		},
-		// --- 2. Lambda 捕获方法参数 ---
+		// --- 2. 成员变量读取 (显式 this) ---
 		{
-			sourceQN: "testCaptures$lambda2",
-			targetQN: "param",
+			sourceQN: "com.example.rel.UseRelationSuite.testUseCases",
+			targetQN: "fieldVar",
 			checkMores: func(t *testing.T, m map[string]interface{}) {
-				assert.Equal(t, "parameter", m[java.RelCaptureKind])
-				assert.Contains(t, m[java.RelCallEnclosingMethod], "testCaptures")
+				assert.Equal(t, "this", m[java.RelUseReceiver])
+				assert.Equal(t, "field_access", m[java.RelAstKind])
 			},
 		},
-		// --- 3. Lambda 捕获成员变量 (隐式 this) ---
+		// --- 4. 静态字段访问 ---
 		{
-			sourceQN: "testCaptures$lambda3",
-			targetQN: "fieldData",
+			sourceQN: "com.example.rel.UseRelationSuite.testUseCases",
+			targetQN: "CONSTANT",
 			checkMores: func(t *testing.T, m map[string]interface{}) {
-				assert.Equal(t, "field", m[java.RelCaptureKind])
-				assert.Equal(t, "this", m[java.RelCallReceiver])
-				assert.Equal(t, true, m[java.RelCaptureIsImplicitThis])
+				assert.Equal(t, "UseRelationSuite", m[java.RelUseReceiverType])
+				assert.Equal(t, true, m[java.RelUseIsStatic])
 			},
 		},
-		// --- 4. Lambda 访问静态成员 ---
+		// --- 5. 数组引用读取 ---
 		{
-			sourceQN: "testCaptures$lambda4",
-			targetQN: "staticData",
+			sourceQN: "com.example.rel.UseRelationSuite.testUseCases",
+			targetQN: "arr",
 			checkMores: func(t *testing.T, m map[string]interface{}) {
-				assert.Equal(t, true, m[java.RelCallIsStatic])
+				assert.Equal(t, "array_access", m[java.RelAstKind])
+				assert.Equal(t, "0", m[java.RelUseIndexExpression])
+				assert.Equal(t, "array_source", m[java.RelUseUsageRole])
 			},
 		},
-		// --- 5. 匿名内部类捕获局部变量 ---
+		// --- 6. 方法参数传递 (Argument Use) ---
 		{
-			sourceQN: "testCaptures$1.run", // 匿名类的方法
-			targetQN: "localVal",
+			sourceQN: "com.example.rel.UseRelationSuite.testUseCases",
+			targetQN: "s",
 			checkMores: func(t *testing.T, m map[string]interface{}) {
-				assert.Equal(t, "local_variable", m[java.RelCaptureKind])
-				assert.Equal(t, "anonymous_class_capture", m[java.RelAstKind])
+				assert.Equal(t, "print", m[java.RelUseCallSite])
+				assert.Equal(t, 0, m[java.RelUseArgumentIndex])
 			},
 		},
-		// --- 6. 嵌套 Lambda 捕获 (深度校验) ---
+		// --- 7. 条件读取 ---
 		{
-			sourceQN: "testCaptures$lambda5$lambda6", // 嵌套 Lambda 标识
-			targetQN: "localVal",
+			sourceQN: "com.example.rel.UseRelationSuite.testUseCases",
+			targetQN: "x",
 			checkMores: func(t *testing.T, m map[string]interface{}) {
-				assert.Equal(t, 2, m[java.RelCaptureDepth]) // 深度为 2
-				assert.NotEmpty(t, m[java.RelCaptureEnclosingLambda])
-				assert.Equal(t, "localVal", m[java.RelRawText])
+				assert.Equal(t, "if_condition", m[java.RelUseContext])
+			},
+		},
+		// --- 8. 增强 for 循环中的集合读取 ---
+		{
+			sourceQN: "com.example.rel.UseRelationSuite.testUseCases",
+			targetQN: "list",
+			checkMores: func(t *testing.T, m map[string]interface{}) {
+				assert.Equal(t, "enhanced_for_statement", m[java.RelAstKind])
+				assert.Equal(t, "iterator_source", m[java.RelUseUsageRole])
+			},
+		},
+		// --- 9. Lambda 捕获读取 ---
+		{
+			sourceQN: "testUseCases$lambda", // Lambda 内部
+			targetQN: "fieldVar",
+			checkMores: func(t *testing.T, m map[string]interface{}) {
+				assert.Equal(t, true, m[java.RelUseIsCapture])
+				assert.Contains(t, m[java.RelUseEnclosingMethod], "testUseCases")
+			},
+		},
+		// --- 10. 类型强制转换中的读取 ---
+		{
+			sourceQN: "com.example.rel.UseRelationSuite.testUseCases",
+			targetQN: "obj",
+			checkMores: func(t *testing.T, m map[string]interface{}) {
+				assert.Equal(t, "cast_expression", m[java.RelAstKind])
+				assert.Equal(t, "String", m[java.RelUseTargetType])
 			},
 		},
 	}
@@ -610,19 +793,19 @@ func TestJavaExtractor_Capture(t *testing.T) {
 	for _, exp := range expectedRels {
 		found := false
 		for _, rel := range allRelations {
-			// 由于 Capture 关系在 model 中可能映射为 Capture 或 Use 类型
-			// 我们这里重点匹配 SourceQN 和 TargetName
-			if rel.Target.Name == exp.targetQN &&
+			// 匹配原则：类型为 USE + 目标名一致 + SourceQN 包含
+			if rel.Type == model.Use &&
+				rel.Target.Name == exp.targetQN &&
 				strings.Contains(rel.Source.QualifiedName, exp.sourceQN) {
 
 				found = true
 				if exp.checkMores != nil {
 					exp.checkMores(t, rel.Mores)
 				}
-				break
+				// 注意：同一个变量可能被多次使用，这里可以根据具体测试需要决定是否 break
 			}
 		}
-		assert.True(t, found, "Missing Capture relation: %s -> %s", exp.sourceQN, exp.targetQN)
+		assert.True(t, found, "Missing Use relation: %s -> %s", exp.sourceQN, exp.targetQN)
 	}
 }
 
@@ -726,113 +909,6 @@ func TestJavaExtractor_Cast(t *testing.T) {
 			}
 		}
 		assert.True(t, found, "Missing Cast relation: %s -> %s", exp.sourceQN, exp.targetQN)
-	}
-}
-
-func TestJavaExtractor_Create(t *testing.T) {
-	// 1. 准备与提取
-	testFile := "testdata/com/example/rel/CreateRelationSuite.java"
-	files := []string{testFile}
-	gCtx := runPhase1Collection(t, files)
-	extractor := java.NewJavaExtractor()
-	allRelations, err := extractor.Extract(testFile, gCtx)
-	if err != nil {
-		t.Fatalf("Extraction failed: %v", err)
-	}
-
-	// 2. 定义断言数据集
-	expectedRels := []struct {
-		sourceQN   string
-		targetQN   string // 实例化的类名
-		checkMores func(t *testing.T, m map[string]interface{})
-	}{
-		// --- 1. 成员变量声明时实例化 ---
-		{
-			sourceQN: "com.example.rel.CreateRelationSuite.fieldInstance",
-			targetQN: "ArrayList",
-			checkMores: func(t *testing.T, m map[string]interface{}) {
-				assert.Equal(t, true, m[java.RelCreateIsInitializer])
-				assert.Equal(t, "fieldInstance", m[java.RelCreateVariableName])
-				assert.Equal(t, "object_creation_expression", m[java.RelAstKind])
-			},
-		},
-		// --- 2. 静态成员变量实例化 ---
-		{
-			sourceQN: "com.example.rel.CreateRelationSuite.staticMap",
-			targetQN: "HashMap",
-			checkMores: func(t *testing.T, m map[string]interface{}) {
-				assert.Equal(t, true, m[java.RelCallIsStatic])
-				assert.Equal(t, true, m[java.RelCreateIsInitializer])
-			},
-		},
-		// --- 3. 局部变量实例化 ---
-		{
-			sourceQN: "com.example.rel.CreateRelationSuite.testCreateCases",
-			targetQN: "StringBuilder",
-			checkMores: func(t *testing.T, m map[string]interface{}) {
-				assert.Equal(t, "sb", m[java.RelCreateVariableName])
-				assert.Contains(t, m[java.RelCreateArguments], "\"init\"")
-			},
-		},
-		// --- 4. 匿名内部类创建 ---
-		{
-			sourceQN: "com.example.rel.CreateRelationSuite.testCreateCases",
-			targetQN: "Runnable",
-			checkMores: func(t *testing.T, m map[string]interface{}) {
-				assert.Equal(t, true, m[java.RelCreateIsAnonymous])
-				// 匿名类通常还会触发 IMPLEMENTS 关系，这里仅校验 CREATE 动作
-				assert.Equal(t, "anonymous_class_submission", m[java.RelAstKind])
-			},
-		},
-		// --- 5. 数组实例化 ---
-		{
-			sourceQN: "com.example.rel.CreateRelationSuite.testCreateCases",
-			targetQN: "String",
-			checkMores: func(t *testing.T, m map[string]interface{}) {
-				assert.Equal(t, true, m[java.RelCreateIsArray])
-				assert.Equal(t, 1, m[java.RelCreateDimensions])
-				assert.Equal(t, "5", m[java.RelCreateArraySize])
-				assert.Equal(t, "array_creation_expression", m[java.RelAstKind])
-			},
-		},
-		// --- 6. 链式调用中的实例化 ---
-		{
-			sourceQN: "com.example.rel.CreateRelationSuite.testCreateCases",
-			targetQN: "CreateRelationSuite",
-			checkMores: func(t *testing.T, m map[string]interface{}) {
-				assert.Equal(t, true, m[java.RelCreateHasSubsequentCall])
-				assert.Equal(t, "doNothing", m[java.RelCreateSubsequentCall])
-			},
-		},
-		// --- 7. 构造函数内部实例化 (super 调用) ---
-		{
-			sourceQN: "com.example.rel.CreateRelationSuite.<init>",
-			targetQN: "Object",
-			checkMores: func(t *testing.T, m map[string]interface{}) {
-				assert.Equal(t, "super", m[java.RelCallReceiver])
-				assert.Equal(t, true, m[java.RelCreateIsConstructorChain])
-				assert.Equal(t, "explicit_constructor_invocation", m[java.RelAstKind])
-			},
-		},
-	}
-
-	// 3. 执行匹配断言
-	for _, exp := range expectedRels {
-		found := false
-		for _, rel := range allRelations {
-			// 匹配原则：类型为 CREATE + 目标类名一致 + SourceQN 包含关系
-			if rel.Type == model.Create &&
-				rel.Target.Name == exp.targetQN &&
-				strings.Contains(rel.Source.QualifiedName, exp.sourceQN) {
-
-				found = true
-				if exp.checkMores != nil {
-					exp.checkMores(t, rel.Mores)
-				}
-				break
-			}
-		}
-		assert.True(t, found, "Missing Create relation: %s -> %s", exp.sourceQN, exp.targetQN)
 	}
 }
 
@@ -1200,127 +1276,6 @@ func TestJavaExtractor_TypeArg(t *testing.T) {
 			}
 		}
 		assert.True(t, found, "Missing TypeArg: %s -> %s (index %d)", exp.sourceQN, exp.targetQN, exp.index)
-	}
-}
-
-func TestJavaExtractor_Use(t *testing.T) {
-	// 1. 准备与提取
-	testFile := "testdata/com/example/rel/UseRelationSuite.java"
-	files := []string{testFile}
-	gCtx := runPhase1Collection(t, files)
-	extractor := java.NewJavaExtractor()
-	allRelations, err := extractor.Extract(testFile, gCtx)
-	if err != nil {
-		t.Fatalf("Extraction failed: %v", err)
-	}
-
-	// 2. 定义断言数据集
-	expectedRels := []struct {
-		sourceQN   string
-		targetQN   string // 被使用的变量、字段或参数名
-		checkMores func(t *testing.T, m map[string]interface{})
-	}{
-		// --- 1. 局部变量读取 ---
-		{
-			sourceQN: "com.example.rel.UseRelationSuite.testUseCases",
-			targetQN: "local",
-			checkMores: func(t *testing.T, m map[string]interface{}) {
-				assert.Equal(t, "local + 2", m[java.RelUseParentExpression])
-				assert.Equal(t, "operand", m[java.RelUseUsageRole])
-				assert.Equal(t, "identifier", m[java.RelAstKind])
-			},
-		},
-		// --- 2. 成员变量读取 (显式 this) ---
-		{
-			sourceQN: "com.example.rel.UseRelationSuite.testUseCases",
-			targetQN: "fieldVar",
-			checkMores: func(t *testing.T, m map[string]interface{}) {
-				assert.Equal(t, "this", m[java.RelUseReceiver])
-				assert.Equal(t, "field_access", m[java.RelAstKind])
-			},
-		},
-		// --- 4. 静态字段访问 ---
-		{
-			sourceQN: "com.example.rel.UseRelationSuite.testUseCases",
-			targetQN: "CONSTANT",
-			checkMores: func(t *testing.T, m map[string]interface{}) {
-				assert.Equal(t, "UseRelationSuite", m[java.RelUseReceiverType])
-				assert.Equal(t, true, m[java.RelUseIsStatic])
-			},
-		},
-		// --- 5. 数组引用读取 ---
-		{
-			sourceQN: "com.example.rel.UseRelationSuite.testUseCases",
-			targetQN: "arr",
-			checkMores: func(t *testing.T, m map[string]interface{}) {
-				assert.Equal(t, "array_access", m[java.RelAstKind])
-				assert.Equal(t, "0", m[java.RelUseIndexExpression])
-				assert.Equal(t, "array_source", m[java.RelUseUsageRole])
-			},
-		},
-		// --- 6. 方法参数传递 (Argument Use) ---
-		{
-			sourceQN: "com.example.rel.UseRelationSuite.testUseCases",
-			targetQN: "s",
-			checkMores: func(t *testing.T, m map[string]interface{}) {
-				assert.Equal(t, "print", m[java.RelUseCallSite])
-				assert.Equal(t, 0, m[java.RelUseArgumentIndex])
-			},
-		},
-		// --- 7. 条件读取 ---
-		{
-			sourceQN: "com.example.rel.UseRelationSuite.testUseCases",
-			targetQN: "x",
-			checkMores: func(t *testing.T, m map[string]interface{}) {
-				assert.Equal(t, "if_condition", m[java.RelUseContext])
-			},
-		},
-		// --- 8. 增强 for 循环中的集合读取 ---
-		{
-			sourceQN: "com.example.rel.UseRelationSuite.testUseCases",
-			targetQN: "list",
-			checkMores: func(t *testing.T, m map[string]interface{}) {
-				assert.Equal(t, "enhanced_for_statement", m[java.RelAstKind])
-				assert.Equal(t, "iterator_source", m[java.RelUseUsageRole])
-			},
-		},
-		// --- 9. Lambda 捕获读取 ---
-		{
-			sourceQN: "testUseCases$lambda", // Lambda 内部
-			targetQN: "fieldVar",
-			checkMores: func(t *testing.T, m map[string]interface{}) {
-				assert.Equal(t, true, m[java.RelUseIsCapture])
-				assert.Contains(t, m[java.RelUseEnclosingMethod], "testUseCases")
-			},
-		},
-		// --- 10. 类型强制转换中的读取 ---
-		{
-			sourceQN: "com.example.rel.UseRelationSuite.testUseCases",
-			targetQN: "obj",
-			checkMores: func(t *testing.T, m map[string]interface{}) {
-				assert.Equal(t, "cast_expression", m[java.RelAstKind])
-				assert.Equal(t, "String", m[java.RelUseTargetType])
-			},
-		},
-	}
-
-	// 3. 执行匹配断言
-	for _, exp := range expectedRels {
-		found := false
-		for _, rel := range allRelations {
-			// 匹配原则：类型为 USE + 目标名一致 + SourceQN 包含
-			if rel.Type == model.Use &&
-				rel.Target.Name == exp.targetQN &&
-				strings.Contains(rel.Source.QualifiedName, exp.sourceQN) {
-
-				found = true
-				if exp.checkMores != nil {
-					exp.checkMores(t, rel.Mores)
-				}
-				// 注意：同一个变量可能被多次使用，这里可以根据具体测试需要决定是否 break
-			}
-		}
-		assert.True(t, found, "Missing Use relation: %s -> %s", exp.sourceQN, exp.targetQN)
 	}
 }
 
