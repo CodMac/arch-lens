@@ -89,6 +89,13 @@ func (e *Extractor) enrichCallCore(rel *model.DependencyRelation, node *sitter.N
 	if node == nil {
 		return
 	}
+
+	// 只有当目标是 Method 且名称还不带括号时才补全
+	if rel.Target != nil && rel.Target.Kind == model.Method && !strings.Contains(rel.Target.Name, "(") {
+		// 目前统一补全为 ()，因为精确参数推断需要后续的 Lambda/Type 推断支持
+		rel.Target.QualifiedName += "()"
+	}
+
 	// 1. 定位真实的调用节点
 	callNode := e.findNearestKind(node, "method_invocation", "method_reference", "explicit_constructor_invocation", "object_creation_expression")
 	if callNode == nil {
@@ -374,6 +381,38 @@ func (e *Extractor) discoverActionRelations(fCtx *core.FileContext, gCtx *core.G
 				continue
 			}
 
+			// --- 核心修改：处理 Create 和 Call 双重关系 ---
+			if relType == model.Create {
+				// 1. 生成 Create 关系
+				rels = append(rels, &model.DependencyRelation{
+					Type:     model.Create,
+					Source:   sourceElem,
+					Target:   e.quickResolve(e.clean(cap.Node.Utf8Text(*fCtx.SourceBytes)), model.Class, gCtx, fCtx),
+					Location: e.toLoc(cap.Node, fCtx.FilePath),
+					Mores: map[string]interface{}{
+						RelRawText: stmtNode.Utf8Text(*fCtx.SourceBytes),
+						"tmp_node": &cap.Node,
+						"tmp_stmt": stmtNode,
+					},
+				})
+
+				// 2. 派生生成 Call (构造函数) 关系
+				// 这里将 Kind 设为 Method，以便在 enrichCallCore 中处理括号
+				rels = append(rels, &model.DependencyRelation{
+					Type:     model.Call,
+					Source:   sourceElem,
+					Target:   e.quickResolve(e.clean(cap.Node.Utf8Text(*fCtx.SourceBytes)), model.Method, gCtx, fCtx),
+					Location: e.toLoc(cap.Node, fCtx.FilePath),
+					Mores: map[string]interface{}{
+						RelRawText: stmtNode.Utf8Text(*fCtx.SourceBytes),
+						"tmp_node": &cap.Node,
+						"tmp_stmt": stmtNode,
+					},
+				})
+				continue
+			}
+
+			// 原有的通用处理逻辑 (Call, Assign, Use, Throw 等)
 			rels = append(rels, &model.DependencyRelation{
 				Type:     relType,
 				Source:   sourceElem,
