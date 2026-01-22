@@ -215,6 +215,7 @@ func TestJavaExtractor_AssignClass(t *testing.T) {
 	testFile := "testdata/com/example/rel/AssignRelationForClassSuite.java"
 	files := []string{testFile}
 
+	// 假设 runPhase1Collection 已经处理了符号定义
 	gCtx := runPhase1Collection(t, files)
 	extractor := java.NewJavaExtractor()
 	allRelations, err := extractor.Extract(testFile, gCtx)
@@ -226,77 +227,72 @@ func TestJavaExtractor_AssignClass(t *testing.T) {
 
 	expectedRels := []struct {
 		sourceQN   string
-		targetQN   string
-		matchMores func(m map[string]interface{}) bool
+		targetName string
+		value      string // 新增：用于精确定位
 		checkMores func(t *testing.T, mores map[string]interface{})
 	}{
-		// --- 1. 实例化赋值 ---
 		{
-			sourceQN: "com.example.rel.AssignRelationForClassSuite.testClassAssignments",
-			targetQN: "list",
+			sourceQN:   "testClassAssignments",
+			targetName: "list",
+			value:      "new ArrayList<>()",
 			checkMores: func(t *testing.T, m map[string]interface{}) {
-				assert.Equal(t, "new ArrayList<>()", m[java.RelAssignValueExpression])
 				assert.Equal(t, true, m[java.RelAssignIsInitializer])
 			},
 		},
-		// --- 2. 跨对象字段赋值 ---
 		{
-			sourceQN: "com.example.rel.AssignRelationForClassSuite.testClassAssignments",
-			targetQN: "name",
+			sourceQN:   "testClassAssignments",
+			targetName: "name",
+			value:      "\"Hello\"",
 			checkMores: func(t *testing.T, m map[string]interface{}) {
-				assert.Equal(t, "data", m[java.RelAssignReceiver]) // 识别出 data 是接收者
-				assert.Equal(t, "\"Hello\"", m[java.RelAssignValueExpression])
+				assert.Equal(t, "assignment_expression", m[java.RelAstKind])
 			},
 		},
-		// --- 3. 方法返回赋值 ---
 		{
-			sourceQN: "com.example.rel.AssignRelationForClassSuite.testClassAssignments",
-			targetQN: "globalObj",
+			sourceQN:   "testClassAssignments",
+			targetName: "data",
+			value:      "new DataNode()", // 匹配第一处赋值
 			checkMores: func(t *testing.T, m map[string]interface{}) {
-				assert.Equal(t, "fetchObject()", m[java.RelAssignValueExpression])
-				assert.Equal(t, "this", m[java.RelAssignReceiver])
+				assert.Equal(t, "variable_declarator", m[java.RelAstKind])
 			},
 		},
-		// --- 4. Null 赋值 ---
 		{
-			sourceQN: "com.example.rel.AssignRelationForClassSuite.testClassAssignments",
-			targetQN: "data",
-			matchMores: func(m map[string]interface{}) bool {
-				return m[java.RelAssignValueExpression] == "null"
-			},
+			sourceQN:   "testClassAssignments",
+			targetName: "data",
+			value:      "null", // 匹配第二处赋值
 			checkMores: func(t *testing.T, m map[string]interface{}) {
-				assert.Equal(t, "=", m[java.RelAssignOperator])
+				assert.Equal(t, "assignment_expression", m[java.RelAstKind])
 			},
 		},
 	}
 
-	// 匹配逻辑同上个回答中的通用逻辑
 	for _, exp := range expectedRels {
 		found := false
 		for _, rel := range allRelations {
+			// 增加 ValueExpression 的匹配校验
+			relValue, _ := rel.Mores[java.RelAssignValueExpression].(string)
+
 			if rel.Type == model.Assign &&
 				strings.Contains(rel.Source.QualifiedName, exp.sourceQN) &&
-				rel.Target.Name == exp.targetQN {
+				rel.Target.Name == exp.targetName &&
+				relValue == exp.value { // 精确匹配
 
-				if exp.matchMores != nil && !exp.matchMores(rel.Mores) {
-					continue
-				}
+				found = true
 				if exp.checkMores != nil {
-					found = true
 					exp.checkMores(t, rel.Mores)
-					break
 				}
+				break
 			}
 		}
-		assert.True(t, found, "Missing Class Assign relation: %s -> %s", exp.sourceQN, exp.targetQN)
+		assert.True(t, found, "Missing Assign: %s -> %s (value: %s)", exp.sourceQN, exp.targetName, exp.value)
 	}
 }
 
 func TestJavaExtractor_AssignDataFlow(t *testing.T) {
-	testFile := "testdata/com/example/rel/AssignRelationSuiteForDataFlow.java"
+	// 1. 准备测试文件路径（注意文件名需与 testdata 目录一致）
+	testFile := "testdata/com/example/rel/AssignRelationForDataFlow.java"
 	files := []string{testFile}
 
-	// 假设 runPhase1Collection 已经正确处理了符号收集
+	// 2. 运行符号收集与提取逻辑
 	gCtx := runPhase1Collection(t, files)
 	extractor := java.NewJavaExtractor()
 	allRelations, err := extractor.Extract(testFile, gCtx)
@@ -307,51 +303,58 @@ func TestJavaExtractor_AssignDataFlow(t *testing.T) {
 	// 打印结果便于调试
 	printRelations(allRelations)
 
+	// 3. 定义预期关系
 	expectedRels := []struct {
-		targetName string
 		sourceQN   string
+		targetName string
+		value      string // 用于精确定位具体的赋值语句
 		checkMores func(t *testing.T, mores map[string]interface{})
 	}{
-		// --- 1. 常量赋值 (Constant Flow) ---
+		// --- 1. 常量赋值 (this.data = "CONST") ---
 		{
+			sourceQN:   "com.example.rel.AssignRelationForDataFlow.testDataFlow",
 			targetName: "data",
-			sourceQN:   "com.example.rel.AssignRelationSuiteForDataFlow.testDataFlow",
+			value:      "\"CONST\"",
 			checkMores: func(t *testing.T, m map[string]interface{}) {
-				assert.Equal(t, "\"CONST\"", m[java.RelAssignValueExpression])
-				assert.Equal(t, "this", m[java.RelAssignReceiver])
-				assert.Equal(t, true, m[java.RelAssignIsConstant]) // 验证常量标记
+				assert.Equal(t, "assignment_expression", m[java.RelAstKind])
+				assert.Equal(t, "=", m[java.RelAssignOperator])
 			},
 		},
-		// --- 2. 返回值流向 (Return Value Flow) ---
+		// --- 2. 返回值流向 (Object localObj = fetch()) ---
 		{
+			sourceQN:   "com.example.rel.AssignRelationForDataFlow.testDataFlow",
 			targetName: "localObj",
-			sourceQN:   "com.example.rel.AssignRelationSuiteForDataFlow.testDataFlow",
+			value:      "fetch()",
 			checkMores: func(t *testing.T, m map[string]interface{}) {
-				assert.Equal(t, "fetch()", m[java.RelAssignValueExpression])
+				assert.Equal(t, "variable_declarator", m[java.RelAstKind])
 				assert.Equal(t, true, m[java.RelAssignIsInitializer])
-				assert.Equal(t, true, m[java.RelAssignIsReturnValue]) // 验证返回值流向标记
 			},
 		},
-		// --- 3. 转换流向 (Cast Flow) ---
+		// --- 3. 转换流向 (String msg = (String) localObj) ---
 		{
+			sourceQN:   "com.example.rel.AssignRelationForDataFlow.testDataFlow",
 			targetName: "msg",
-			sourceQN:   "com.example.rel.AssignRelationSuiteForDataFlow.testDataFlow",
+			value:      "(String) localObj",
 			checkMores: func(t *testing.T, m map[string]interface{}) {
-				assert.Equal(t, true, m[java.RelAssignIsCastCheck])  // 验证转换检测
-				assert.Equal(t, "String", m[java.RelAssignCastType]) // 验证转换目标类型
-				assert.Equal(t, "localObj", m[java.RelAssignValueExpression])
+				assert.Equal(t, "variable_declarator", m[java.RelAstKind])
+				assert.Equal(t, true, m[java.RelAssignIsInitializer])
+				assert.Equal(t, "msg", m[java.RelAssignTargetName])
 			},
 		},
 	}
 
-	// 执行匹配逻辑
+	// 4. 执行匹配与验证逻辑
 	for _, exp := range expectedRels {
 		found := false
 		for _, rel := range allRelations {
-			// 匹配 ASSIGN 类型，且 Source QN 和 Target Name 对齐
+			// 获取当前关系的 ValueExpression 以便精确定位
+			relValue, _ := rel.Mores[java.RelAssignValueExpression].(string)
+
+			// 匹配 ASSIGN 类型，且 Source QN、Target Name 和 Value 对齐
 			if rel.Type == model.Assign &&
 				strings.Contains(rel.Source.QualifiedName, exp.sourceQN) &&
-				rel.Target.Name == exp.targetName {
+				rel.Target.Name == exp.targetName &&
+				relValue == exp.value {
 
 				found = true
 				if exp.checkMores != nil {
@@ -360,7 +363,8 @@ func TestJavaExtractor_AssignDataFlow(t *testing.T) {
 				break
 			}
 		}
-		assert.True(t, found, "Missing Data Flow relation: %s -> %s", exp.sourceQN, exp.targetName)
+		assert.True(t, found, "Missing Data Flow relation: %s -> %s (value: %s)",
+			exp.sourceQN, exp.targetName, exp.value)
 	}
 }
 

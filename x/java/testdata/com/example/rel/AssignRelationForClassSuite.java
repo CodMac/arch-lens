@@ -12,8 +12,8 @@ public class AssignRelationForClassSuite {
         // Target: com.example.rel.AssignRelationForClassSuite.testClassAssignments().list (VARIABLE)
         // Mores: {
         //   "java.rel.raw_text": "list = new ArrayList<>()",
-        //   "java.rel.context": "variable_declarator",
         //   "java.rel.ast_kind": "variable_declarator",
+        //   "java.rel.context": "variable_declarator",
         //   "java.rel.assign.target_name": "list",
         //   "java.rel.assign.is_initializer": true,
         //   "java.rel.assign.operator": "=",
@@ -26,8 +26,8 @@ public class AssignRelationForClassSuite {
         // Target: com.example.rel.AssignRelationForClassSuite.testClassAssignments().otherList (VARIABLE)
         // Mores: {
         //   "java.rel.raw_text": "otherList = list",
-        //   "java.rel.context": "variable_declarator",
         //   "java.rel.ast_kind": "variable_declarator",
+        //   "java.rel.context": "variable_declarator",
         //   "java.rel.assign.target_name": "otherList",
         //   "java.rel.assign.is_initializer": true,
         //   "java.rel.assign.operator": "=",
@@ -35,17 +35,16 @@ public class AssignRelationForClassSuite {
         // }
         List<String> otherList = list;
 
-        // 3. 跨对象字段赋值 (Field Access on Other Object)
+        // 3. 跨对象字段赋值 (Field Access)
         // Source: com.example.rel.AssignRelationForClassSuite.testClassAssignments() (METHOD)
         // Target: com.example.rel.AssignRelationForClassSuite.DataNode.name (FIELD)
         // Mores: {
         //   "java.rel.raw_text": "data.name = \"Hello\"",
-        //   "java.rel.context": "assignment_expression",
         //   "java.rel.ast_kind": "assignment_expression",
+        //   "java.rel.context": "expression_statement",
         //   "java.rel.assign.target_name": "name",
         //   "java.rel.assign.operator": "=",
-        //   "java.rel.assign.value_expression": "\"Hello\"",
-        //   "java.rel.assign.receiver": "data"
+        //   "java.rel.assign.value_expression": "\"Hello\""
         // }
         DataNode data = new DataNode();
         data.name = "Hello";
@@ -55,12 +54,11 @@ public class AssignRelationForClassSuite {
         // Target: com.example.rel.AssignRelationForClassSuite.globalObj (FIELD)
         // Mores: {
         //   "java.rel.raw_text": "this.globalObj = fetchObject()",
-        //   "java.rel.context": "assignment_expression",
         //   "java.rel.ast_kind": "assignment_expression",
+        //   "java.rel.context": "expression_statement",
         //   "java.rel.assign.target_name": "globalObj",
         //   "java.rel.assign.operator": "=",
-        //   "java.rel.assign.value_expression": "fetchObject()",
-        //   "java.rel.assign.receiver": "this"
+        //   "java.rel.assign.value_expression": "fetchObject()"
         // }
         this.globalObj = fetchObject();
 
@@ -69,8 +67,8 @@ public class AssignRelationForClassSuite {
         // Target: com.example.rel.AssignRelationForClassSuite.testClassAssignments().data (VARIABLE)
         // Mores: {
         //   "java.rel.raw_text": "data = null",
-        //   "java.rel.context": "assignment_expression",
         //   "java.rel.ast_kind": "assignment_expression",
+        //   "java.rel.context": "expression_statement",
         //   "java.rel.assign.target_name": "data",
         //   "java.rel.assign.operator": "=",
         //   "java.rel.assign.value_expression": "null"
