@@ -12,62 +12,46 @@ public class CaptureRelationSuite {
         String localVal = "local";
 
         // 1. Lambda 捕获局部变量
-        // Source: LambdaSymbol, Target: Variable(localVal)
-        // Mores: {
-        //   "java.rel.capture.kind": "local_variable",
-        //   "java.rel.capture.is_effectively_final": true,
-        //   "java.rel.ast_kind": "lambda_expression",
-        //   "java.rel.raw_text": "localVal"
-        // }
+        // Source: Lambda(com.example.rel.CaptureRelationSuite.testCaptures(String)$lambda$1)
+        // Target: Variable(com.example.rel.CaptureRelationSuite.testCaptures(String).localVal)
+        // Mores: { "java.rel.use.is_capture": true, "java.rel.ast_kind": "identifier" }
         Runnable r1 = () -> System.out.println(localVal);
 
         // 2. Lambda 捕获方法参数
-        // Source: LambdaSymbol, Target: Parameter(param)
-        // Mores: {
-        //   "java.rel.capture.kind": "parameter",
-        //   "java.rel.call.enclosing_method": "testCaptures",
-        //   "java.rel.ast_kind": "lambda_expression"
-        // }
+        // Source: Lambda(com.example.rel.CaptureRelationSuite.testCaptures(String)$lambda$2)
+        // Target: Parameter(com.example.rel.CaptureRelationSuite.testCaptures(String).param)
+        // Mores: { "java.rel.use.is_capture": true, "java.rel.call.enclosing_method": "com.example.rel.CaptureRelationSuite.testCaptures(String)" }
         Consumer<String> c1 = (s) -> System.out.println(s + param);
 
-        // 3. Lambda 捕获成员变量 (隐式通过 this 捕获)
-        // Source: LambdaSymbol, Target: Field(fieldData)
-        // Mores: {
-        //   "java.rel.capture.kind": "field",
-        //   "java.rel.call.receiver": "this",
-        //   "java.rel.capture.is_implicit_this": true
-        // }
+        // 3. Lambda 捕获成员变量 (通过 implicit this 访问)
+        // Source: Lambda(com.example.rel.CaptureRelationSuite.testCaptures(String)$lambda$3)
+        // Target: Field(com.example.rel.CaptureRelationSuite.fieldData)
+        // Mores: { "java.rel.use.is_capture": true, "java.rel.use.receiver": "this" }
         Supplier<String> s1 = () -> fieldData;
 
-        // 4. Lambda 访问静态成员 (虽不属于 Heap 上的闭包捕获，但在依赖分析中需标记)
-        // Source: LambdaSymbol, Target: Field(staticData)
-        // Mores: {
-        //   "java.rel.call.is_static": true,
-        //   "java.rel.ast_kind": "lambda_expression"
-        // }
-        Runnable r2 = () -> staticData++;
+        // 4. Lambda 访问静态成员 (虽不属于 Heap 闭包捕获，但属跨作用域 Use)
+        // Source: Lambda(com.example.rel.CaptureRelationSuite.testCaptures(String)$lambda$4)
+        // Target: Field(com.example.rel.CaptureRelationSuite.staticData)
+        // Mores: { "java.rel.use.is_capture": true, "java.rel.ast_kind": "identifier" }
+        Runnable r2 = () -> {
+            int val = staticData;
+        };
 
         // 5. 匿名内部类捕获局部变量
-        // Source: Method(run), Target: Variable(localVal)
-        // Mores: {
-        //   "java.rel.capture.kind": "local_variable",
-        //   "java.rel.ast_kind": "anonymous_class_capture"
-        // }
+        // Source: Method(com.example.rel.CaptureRelationSuite$1.run)
+        // Target: Variable(com.example.rel.CaptureRelationSuite.testCaptures(String).localVal)
+        // Mores: { "java.rel.use.is_capture": true, "java.rel.call.enclosing_method": "com.example.rel.CaptureRelationSuite.testCaptures(String)" }
         new Thread(new Runnable() {
             @Override
             public void run() {
-                // 这里发生了跨作用域访问
                 System.out.println(localVal);
             }
         }).start();
 
-        // 6. 嵌套 Lambda 捕获 (多级溯源)
-        // Source: InnerLambdaSymbol, Target: Variable(localVal)
-        // Mores: {
-        //   "java.rel.capture.depth": 2,
-        //   "java.rel.capture.enclosing_lambda": "OuterLambda",
-        //   "java.rel.raw_text": "localVal"
-        // }
+        // 6. 嵌套 Lambda 捕获
+        // Source: Lambda(...$lambda$5$lambda$1)
+        // Target: Variable(com.example.rel.CaptureRelationSuite.testCaptures(String).localVal)
+        // Mores: { "java.rel.use.is_capture": true, "java.rel.raw_text": "localVal" }
         Runnable nested = () -> {
             Runnable inner = () -> System.out.println(localVal);
         };
