@@ -545,7 +545,8 @@ func (e *Extractor) quickResolve(symbol string, kind model.ElementKind, gCtx *co
 	if entries := gCtx.ResolveSymbol(fCtx, symbol); len(entries) > 0 {
 		return entries[0].Element
 	}
-	return &model.CodeElement{Name: symbol, QualifiedName: symbol, Kind: kind}
+
+	return &model.CodeElement{Name: symbol, QualifiedName: symbol, Kind: kind, IsFormExternal: true}
 }
 
 func (e *Extractor) toLoc(n sitter.Node, path string) *model.Location {
