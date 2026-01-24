@@ -437,11 +437,9 @@ func (e *Extractor) mapAction(capName string, node *sitter.Node) []ActionTarget 
 		return []ActionTarget{{model.Call, model.Method, node, ctx}}
 
 	case "create_target":
-		// 修正：增加对 array_creation_expression 的支持
 		ctx := e.findNearestKind(node, "object_creation_expression", "array_creation_expression")
 		return []ActionTarget{
 			{model.Create, model.Class, node, ctx},
-			// 只有对象创建才映射 Call（构造函数），数组创建一般不需要 Call 关系
 			{model.Call, model.Method, node, ctx},
 		}
 
@@ -456,9 +454,7 @@ func (e *Extractor) mapAction(capName string, node *sitter.Node) []ActionTarget 
 		return []ActionTarget{{model.Throw, model.Class, node, e.findThrowStatement(node)}}
 
 	case "explicit_constructor_stmt":
-		// 修正：super() 和 this() 应该产生 CALL 关系
-		// 同时，根据你的测试要求（Case 7），super() 需要产生一个指向 Object 的 CREATE 关系
-		// 注意：这里我们将 node 既作为 target 也作为 ctx
+		// super() 和 this() 应该产生 CALL 关系
 		return []ActionTarget{
 			{model.Call, model.Method, node, node},
 			{model.Create, model.Class, node, node}, // 用于触发 super() -> Object 的 Create 关系
