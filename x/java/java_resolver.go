@@ -46,8 +46,11 @@ func (j *SymbolResolver) Resolve(gc *core.GlobalContext, fc *core.FileContext, s
 	// 2. 精确导入
 	if imps, ok := fc.Imports[symbol]; ok {
 		for _, imp := range imps {
+			// 仅import的源码符号才有可能在上下文中被发现，外部导入直接返回nil
 			if defs, found := gc.DefinitionsByQN[imp.RawImportPath]; found {
 				return defs
+			} else {
+				return nil
 			}
 		}
 	}
