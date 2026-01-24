@@ -142,10 +142,11 @@ func (c *Collector) identifyElement(node *sitter.Node, fCtx *core.FileContext, p
 	}
 
 	return &model.CodeElement{
-		Kind:     kind,
-		Name:     name,
-		Path:     fCtx.FilePath,
-		Location: c.extractLocation(node, fCtx.FilePath),
+		Kind:         kind,
+		Name:         name,
+		Path:         fCtx.FilePath,
+		Location:     c.extractLocation(node, fCtx.FilePath),
+		IsFormSource: true,
 	}, kind
 }
 
@@ -467,6 +468,7 @@ func (c *Collector) desugarDefaultConstructor(elem *model.CodeElement, node *sit
 		Extra: &model.Extra{
 			Mores: map[string]interface{}{MethodIsConstructor: true, MethodIsImplicit: true},
 		},
+		IsFormSugar: true,
 	}, elem.QualifiedName, node)
 }
 
@@ -474,7 +476,7 @@ func (c *Collector) desugarEnumMethods(elem *model.CodeElement, node *sitter.Nod
 	// values()
 	vQN := c.resolver.BuildQualifiedName(elem.QualifiedName, "values()")
 	fCtx.AddDefinition(&model.CodeElement{
-		Kind: model.Method, Name: "values", QualifiedName: vQN, Path: fCtx.FilePath, Location: elem.Location,
+		Kind: model.Method, Name: "values", QualifiedName: vQN, Path: fCtx.FilePath, Location: elem.Location, IsFormSugar: true,
 		Signature: fmt.Sprintf("public static %s[] values()", elem.Name),
 		Extra:     &model.Extra{Mores: map[string]interface{}{MethodIsImplicit: true}},
 	}, elem.QualifiedName, node)
@@ -482,7 +484,7 @@ func (c *Collector) desugarEnumMethods(elem *model.CodeElement, node *sitter.Nod
 	// valueOf(String)
 	voQN := c.resolver.BuildQualifiedName(elem.QualifiedName, "valueOf(String)")
 	fCtx.AddDefinition(&model.CodeElement{
-		Kind: model.Method, Name: "valueOf", QualifiedName: voQN, Path: fCtx.FilePath, Location: elem.Location,
+		Kind: model.Method, Name: "valueOf", QualifiedName: voQN, Path: fCtx.FilePath, Location: elem.Location, IsFormSugar: true,
 		Signature: fmt.Sprintf("public static %s valueOf(String name)", elem.Name),
 		Extra:     &model.Extra{Mores: map[string]interface{}{MethodIsImplicit: true}},
 	}, elem.QualifiedName, node)
@@ -523,7 +525,7 @@ func (c *Collector) desugarRecordMembers(elem *model.CodeElement, node *sitter.N
 		mQN := c.resolver.BuildQualifiedName(elem.QualifiedName, mIdentity)
 		if len(c.findDefinitionsByQN(fCtx, mQN)) == 0 {
 			fCtx.AddDefinition(&model.CodeElement{
-				Kind: model.Method, Name: comp.name, QualifiedName: mQN, Path: fCtx.FilePath, Location: elem.Location,
+				Kind: model.Method, Name: comp.name, QualifiedName: mQN, Path: fCtx.FilePath, Location: elem.Location, IsFormSugar: true,
 				Signature: fmt.Sprintf("public %s %s()", comp.vType, comp.name),
 				Extra:     &model.Extra{Mores: map[string]interface{}{MethodIsImplicit: true}},
 			}, elem.QualifiedName, node)
@@ -539,7 +541,7 @@ func (c *Collector) desugarRecordMembers(elem *model.CodeElement, node *sitter.N
 	cQN := c.resolver.BuildQualifiedName(elem.QualifiedName, cIdentity)
 	if len(c.findDefinitionsByQN(fCtx, cQN)) == 0 {
 		fCtx.AddDefinition(&model.CodeElement{
-			Kind: model.Method, Name: elem.Name, QualifiedName: cQN, Path: fCtx.FilePath, Location: elem.Location,
+			Kind: model.Method, Name: elem.Name, QualifiedName: cQN, Path: fCtx.FilePath, Location: elem.Location, IsFormSugar: true,
 			Signature: fmt.Sprintf("public %s(%s)", elem.Name, c.getNodeContent(paramList, *fCtx.SourceBytes)),
 			Extra:     &model.Extra{Mores: map[string]interface{}{MethodIsConstructor: true, MethodIsImplicit: true}},
 		}, elem.QualifiedName, node)
