@@ -10,18 +10,18 @@ const JavaActionQuery = `
   ; 2. 方法引用 (Functional Call)
   (method_reference (identifier) @ref_target) @ref_stmt
   
-  ; 3. 对象创建 (Create / Constructor Call)
+; 3. 对象与数组创建 (Create)
   (object_creation_expression
     type: [
         (type_identifier) @create_target 
         (generic_type (type_identifier) @create_target)
     ]) @create_stmt
-    
-  ; 4. 显式构造函数调用 (this/super call)
-  (explicit_constructor_invocation [
-      (this) @call_target
-      (super) @call_target
-  ]) @explicit_constructor_stmt
+
+  (array_creation_expression
+    type: (type_identifier) @create_target) @create_stmt
+
+  ; 4. 显式构造函数调用 (super/this)
+  (explicit_constructor_invocation) @explicit_constructor_stmt
 
   ; 5. 字段访问 (Use)
   (field_access field: (identifier) @use_field_target) @use_field_stmt
