@@ -56,6 +56,7 @@ const (
 	RelAssignOperator        = "java.rel.assign.operator"         // 赋值运算符，如 "=", "+=", "++"
 	RelAssignIsInitializer   = "java.rel.assign.is_initializer"   // 是否为声明时的初始化赋值 (如 int i = 0)
 	RelAssignValueExpression = "java.rel.assign.value_expression" // 赋值语句右侧的原始表达式文本
+	RelAssignIsCapture       = "java.rel.assign.is_capture"       // 是否为跨作用域的变量捕获赋值
 	RelCreateIsArray         = "java.rel.create.is_array"         // 是否为数组实例化
 	RelCreateVariableName    = "java.rel.create.variable_name"    // 接收实例化对象的变量名
 	RelUseReceiver           = "java.rel.use.receiver"            // 实例字段访问的接收者 (如 "this")

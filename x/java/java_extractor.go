@@ -207,7 +207,7 @@ func (e *Extractor) enrichAssignCore(rel *model.DependencyRelation, capNode, stm
 	}
 	rel.Mores[RelAstKind] = stmtNode.Kind()
 
-	// 统一处理 TargetName
+	// 1. 原有的 TargetName 处理逻辑
 	var targetName string
 	if capNode != nil {
 		targetName = capNode.Utf8Text(src)
@@ -216,6 +216,7 @@ func (e *Extractor) enrichAssignCore(rel *model.DependencyRelation, capNode, stm
 	}
 	rel.Mores[RelAssignTargetName] = targetName
 
+	// 2. 原有的赋值逻辑
 	switch stmtNode.Kind() {
 	case "variable_declarator":
 		rel.Mores[RelAssignIsInitializer] = true
@@ -236,6 +237,14 @@ func (e *Extractor) enrichAssignCore(rel *model.DependencyRelation, capNode, stm
 		rel.Mores[RelAssignOperator] = "++"
 		if strings.Contains(raw, "--") {
 			rel.Mores[RelAssignOperator] = "--"
+		}
+	}
+
+	// 3. 新增：识别 Lambda 内部的赋值捕获
+	if rel.Source != nil && strings.Contains(rel.Source.QualifiedName, "lambda$") {
+		rel.Mores[RelAssignIsCapture] = true
+		if idx := strings.Index(rel.Source.QualifiedName, ".lambda$"); idx != -1 {
+			rel.Mores[RelCallEnclosingMethod] = rel.Source.QualifiedName[:idx]
 		}
 	}
 }
@@ -454,10 +463,9 @@ func (e *Extractor) mapAction(capName string, node *sitter.Node) []ActionTarget 
 		return []ActionTarget{{model.Throw, model.Class, node, e.findThrowStatement(node)}}
 
 	case "explicit_constructor_stmt":
-		// super() 和 this() 应该产生 CALL 关系
 		return []ActionTarget{
 			{model.Call, model.Method, node, node},
-			{model.Create, model.Class, node, node}, // 用于触发 super() -> Object 的 Create 关系
+			{model.Create, model.Class, node, node},
 		}
 
 	default:
