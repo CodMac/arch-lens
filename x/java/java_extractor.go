@@ -71,7 +71,7 @@ func (e *Extractor) enrichCoreMetadata(rel *model.DependencyRelation, fCtx *core
 	case model.Assign:
 		e.enrichAssignCore(rel, node, stmt, src)
 	case model.Use:
-		e.enrichUseCore(rel, node, src)
+		e.enrichUseCore(rel, node, stmt, src)
 	case model.Throw:
 		e.enrichThrowCore(rel, node, stmt, rawText, src)
 	case model.Parameter:
@@ -303,20 +303,19 @@ func (e *Extractor) enrichAnnotationCore(rel *model.DependencyRelation) {
 	rel.Target.QualifiedName = strings.Split(rel.Target.QualifiedName, "(")[0]
 }
 
-func (e *Extractor) enrichUseCore(rel *model.DependencyRelation, node *sitter.Node, src []byte) {
+func (e *Extractor) enrichUseCore(rel *model.DependencyRelation, node, stmt *sitter.Node, src []byte) {
 	if node == nil {
 		return
 	}
 
-	// 1. 强制校准 RawText 为 identifier 文本，解决 "local + 2" 这种父节点溢出问题
-	rel.Mores[RelRawText] = node.Utf8Text(src)
-
-	// 2. 如果 mapAction 找到了 contextNode，则使用它的 Kind 作为 AstKind
-	// 已经在 discoverActionRelations 中通过 tmp_stmt 传入了
-	if stmt, ok := rel.Mores["tmp_stmt"].(*sitter.Node); ok && stmt != nil {
-		rel.Mores[RelAstKind] = stmt.Kind()
-	} else {
-		rel.Mores[RelAstKind] = node.Kind()
+	rel.Mores[RelAstKind] = node.Kind()
+	rel.Mores[RelContext] = stmt.Kind()
+	rel.Mores[RelRawText] = stmt.Utf8Text(src)
+	if stmt.Kind() == "field_access" {
+		obj := stmt.ChildByFieldName("object")
+		if obj != nil && obj.Utf8Text(src) == "this" {
+			rel.Mores[RelUseReceiver] = "this"
+		}
 	}
 }
 
@@ -488,44 +487,49 @@ func (e *Extractor) mapAction(capName string, node *sitter.Node, fCtx *core.File
 			parent.ChildByFieldName("name").Id() == node.Id() {
 			return nil
 		}
-		if pk == "method_invocation" && parent.ChildByFieldName("name").Id() == node.Id() {
+		// 排除作为方法名的情况
+		if (pk == "method_invocation" || pk == "method_reference") &&
+			parent.ChildByFieldName("name") != nil && parent.ChildByFieldName("name").Id() == node.Id() {
 			return nil
 		}
 
 		// 2. 查找上下文节点 (ContextNode)
 		var contextNode *sitter.Node
-		curr := parent
+		curr := node.Parent()
 		for curr != nil {
 			kind := curr.Kind()
-			if kind == "binary_expression" || kind == "array_access" || kind == "cast_expression" ||
-				kind == "enhanced_for_statement" || kind == "lambda_expression" ||
+			// 定义我们感兴趣的上下文类型
+			if kind == "binary_expression" ||
+				kind == "array_access" ||
+				kind == "cast_expression" ||
+				kind == "enhanced_for_statement" ||
+				kind == "field_access" ||
+				kind == "lambda_expression" ||
 				kind == "assignment_expression" {
 				contextNode = curr
 				break
 			}
+			// 遇到语句或方法边界停止，防止跨度过大
 			if strings.HasSuffix(kind, "_statement") || kind == "method_declaration" {
 				break
 			}
 			curr = curr.Parent()
 		}
 
-		// 3. 执行符号解析并应用业务过滤逻辑
+		// 3. 执行解析 (保持原样)
 		target := res(text, model.Variable)
-
-		// --- 过滤逻辑开始 ---
-		if target.IsFormExternal {
+		if target == nil || target.IsFormExternal { // 过滤外部符号以保持纯净
 			return nil
 		}
-		// A. 过滤掉类名引用 (如 List.class 或静态访问中的类名)
+		// 过滤类名引用
 		if target.Kind == model.Class || target.Kind == model.Interface {
 			return nil
 		}
-		// B. 过滤自引用 (变量在自己定义的地方被查出 USE)
+		// 过滤自引用
 		sourceElem := e.determinePreciseSource(node, fCtx, gCtx)
 		if sourceElem != nil && sourceElem.QualifiedName == target.QualifiedName {
 			return nil
 		}
-		// --- 过滤逻辑结束 ---
 
 		return []ActionTarget{{model.Use, model.Variable, node, contextNode, target}}
 
