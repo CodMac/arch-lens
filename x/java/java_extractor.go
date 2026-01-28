@@ -304,8 +304,19 @@ func (e *Extractor) enrichAnnotationCore(rel *model.DependencyRelation) {
 }
 
 func (e *Extractor) enrichUseCore(rel *model.DependencyRelation, node *sitter.Node, src []byte) {
-	if node != nil {
-		rel.Mores[RelAstKind] = "identifier"
+	if node == nil {
+		return
+	}
+
+	// 1. 强制校准 RawText 为 identifier 文本，解决 "local + 2" 这种父节点溢出问题
+	rel.Mores[RelRawText] = node.Utf8Text(src)
+
+	// 2. 如果 mapAction 找到了 contextNode，则使用它的 Kind 作为 AstKind
+	// 已经在 discoverActionRelations 中通过 tmp_stmt 传入了
+	if stmt, ok := rel.Mores["tmp_stmt"].(*sitter.Node); ok && stmt != nil {
+		rel.Mores[RelAstKind] = stmt.Kind()
+	} else {
+		rel.Mores[RelAstKind] = node.Kind()
 	}
 }
 
@@ -392,20 +403,19 @@ func (e *Extractor) discoverActionRelations(fCtx *core.FileContext, gCtx *core.G
 
 		for _, cap := range match.Captures {
 			capName := q.CaptureNames()[cap.Index]
-			if !strings.HasSuffix(capName, "_target") && capName != "update_stmt" && capName != "explicit_constructor_stmt" {
+			if !strings.HasSuffix(capName, "_target") && capName != "update_stmt" &&
+				capName != "explicit_constructor_stmt" && capName != "id_atom" {
 				continue
 			}
 
-			// 治理点：mapAction 返回 ActionTarget 数组，区分 TargetNode 和 ContextNode
-			actionTargets := e.mapAction(capName, &cap.Node)
+			// 1. 调用 mapAction 获取动作定义
+			actionTargets := e.mapAction(capName, &cap.Node, fCtx, gCtx)
 			for _, at := range actionTargets {
-				if at.RelType == "" {
+				if at.RelType == "" || at.Target == nil {
 					continue
 				}
 
-				// TargetText 用于 resolve (保证纯净)
-				targetText := at.TargetNode.Utf8Text(*fCtx.SourceBytes)
-				// ContextNode 用于提取 RawText (保证完整)
+				// 2. 这里的 at.Target 已经在 mapAction 中经过了过滤和 resolve
 				ctxNode := at.ContextNode
 				if ctxNode == nil {
 					ctxNode = at.TargetNode
@@ -414,7 +424,7 @@ func (e *Extractor) discoverActionRelations(fCtx *core.FileContext, gCtx *core.G
 				rels = append(rels, &model.DependencyRelation{
 					Type:     at.RelType,
 					Source:   sourceElem,
-					Target:   e.quickResolve(e.clean(targetText), at.Kind, gCtx, fCtx),
+					Target:   at.Target, // 使用 mapAction resolve 好的对象
 					Location: e.toLoc(*at.TargetNode, fCtx.FilePath),
 					Mores: map[string]interface{}{
 						RelRawText: ctxNode.Utf8Text(*fCtx.SourceBytes),
@@ -435,37 +445,97 @@ func (e *Extractor) discoverActionRelations(fCtx *core.FileContext, gCtx *core.G
 type ActionTarget struct {
 	RelType     model.DependencyType
 	Kind        model.ElementKind
-	TargetNode  *sitter.Node // 真正被引用的标识符
-	ContextNode *sitter.Node // 所在的完整语句/表达式
+	TargetNode  *sitter.Node
+	ContextNode *sitter.Node
+	Target      *model.CodeElement // 新增：直接存放 resolve 后的结果
 }
 
-func (e *Extractor) mapAction(capName string, node *sitter.Node) []ActionTarget {
+func (e *Extractor) mapAction(capName string, node *sitter.Node, fCtx *core.FileContext, gCtx *core.GlobalContext) []ActionTarget {
+	src := *fCtx.SourceBytes
+	text := node.Utf8Text(src)
+
+	// 辅助 resolve 函数
+	res := func(symbol string, kind model.ElementKind) *model.CodeElement {
+		return e.quickResolve(e.clean(symbol), kind, gCtx, fCtx)
+	}
+
 	switch capName {
 	case "call_target", "ref_target":
 		ctx := e.findNearestKind(node, "method_invocation", "method_reference", "explicit_constructor_invocation", "object_creation_expression")
-		return []ActionTarget{{model.Call, model.Method, node, ctx}}
+		return []ActionTarget{{model.Call, model.Method, node, ctx, res(text, model.Method)}}
 
 	case "create_target":
 		ctx := e.findNearestKind(node, "object_creation_expression", "array_creation_expression")
 		return []ActionTarget{
-			{model.Create, model.Class, node, ctx},
-			{model.Call, model.Method, node, ctx},
+			{model.Create, model.Class, node, ctx, res(text, model.Class)},
+			{model.Call, model.Method, node, ctx, res(text, model.Method)},
 		}
 
 	case "assign_target", "update_stmt":
 		ctx := e.findNearestKind(node, "assignment_expression", "variable_declarator", "update_expression")
-		return []ActionTarget{{model.Assign, model.Variable, node, ctx}}
+		return []ActionTarget{{model.Assign, model.Variable, node, ctx, res(text, model.Variable)}}
 
-	case "use_field_target":
-		return []ActionTarget{{model.Use, model.Field, node, node}}
+	case "id_atom":
+		parent := node.Parent()
+		if parent == nil {
+			return nil
+		}
+		pk := parent.Kind()
+
+		// 1. 基础语法位置过滤
+		if (pk == "variable_declarator" || pk == "formal_parameter") &&
+			parent.ChildByFieldName("name") != nil &&
+			parent.ChildByFieldName("name").Id() == node.Id() {
+			return nil
+		}
+		if pk == "method_invocation" && parent.ChildByFieldName("name").Id() == node.Id() {
+			return nil
+		}
+
+		// 2. 查找上下文节点 (ContextNode)
+		var contextNode *sitter.Node
+		curr := parent
+		for curr != nil {
+			kind := curr.Kind()
+			if kind == "binary_expression" || kind == "array_access" || kind == "cast_expression" ||
+				kind == "enhanced_for_statement" || kind == "lambda_expression" ||
+				kind == "assignment_expression" {
+				contextNode = curr
+				break
+			}
+			if strings.HasSuffix(kind, "_statement") || kind == "method_declaration" {
+				break
+			}
+			curr = curr.Parent()
+		}
+
+		// 3. 执行符号解析并应用业务过滤逻辑
+		target := res(text, model.Variable)
+
+		// --- 过滤逻辑开始 ---
+		if target.IsFormExternal {
+			return nil
+		}
+		// A. 过滤掉类名引用 (如 List.class 或静态访问中的类名)
+		if target.Kind == model.Class || target.Kind == model.Interface {
+			return nil
+		}
+		// B. 过滤自引用 (变量在自己定义的地方被查出 USE)
+		sourceElem := e.determinePreciseSource(node, fCtx, gCtx)
+		if sourceElem != nil && sourceElem.QualifiedName == target.QualifiedName {
+			return nil
+		}
+		// --- 过滤逻辑结束 ---
+
+		return []ActionTarget{{model.Use, model.Variable, node, contextNode, target}}
 
 	case "throw_target":
-		return []ActionTarget{{model.Throw, model.Class, node, e.findThrowStatement(node)}}
+		return []ActionTarget{{model.Throw, model.Class, node, e.findThrowStatement(node), res(text, model.Class)}}
 
 	case "explicit_constructor_stmt":
 		return []ActionTarget{
-			{model.Call, model.Method, node, node},
-			{model.Create, model.Class, node, node},
+			{model.Call, model.Method, node, node, res(text, model.Method)},
+			{model.Create, model.Class, node, node, res(text, model.Class)},
 		}
 
 	default:

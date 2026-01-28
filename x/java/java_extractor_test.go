@@ -699,103 +699,125 @@ func TestJavaExtractor_Use(t *testing.T) {
 		t.Fatalf("Extraction failed: %v", err)
 	}
 
+	// 打印结果便于调试
 	printRelations(allRelations)
 
-	// 预定义基础 QN
+	// 基础 QN 定义
 	baseQN := "com.example.rel.UseRelationSuite"
 	methodQN := baseQN + ".testUseCases(int)"
 
-	// 2. 定义断言数据集 (TargetQN 匹配 Collector 收集的完整 QN)
+	// 2. 定义断言数据集
 	expectedRels := []struct {
+		name       string
 		sourceQN   string
 		targetQN   string
 		checkMores func(t *testing.T, m map[string]interface{})
 	}{
-		// --- 1. 局部变量读取 ---
 		{
+			name:     "1. 局部变量读取",
 			sourceQN: methodQN,
 			targetQN: methodQN + ".local",
 			checkMores: func(t *testing.T, m map[string]interface{}) {
+				// 验证 Core 属性
 				assert.Equal(t, "identifier", m[java.RelAstKind])
+				assert.Equal(t, "local", m[java.RelRawText])
+				assert.Equal(t, "binary_expression", m[java.RelContext])
 			},
 		},
-		// --- 2. 成员变量读取 (显式 this) ---
 		{
+			name:     "2. 成员变量读取 (显式 this)",
 			sourceQN: methodQN,
 			targetQN: baseQN + ".fieldVar",
 			checkMores: func(t *testing.T, m map[string]interface{}) {
-				assert.Equal(t, "this", m[java.RelUseReceiver])
-				// 显式 field_access 在 extractor 中通常记录为 identifier 或特定 kind
-				assert.NotEmpty(t, m[java.RelAstKind])
+				assert.Equal(t, "this", m[java.RelUseReceiver]) // java.rel.use.* 前缀
+				assert.Equal(t, "fieldVar", m[java.RelRawText])
 			},
 		},
-		// --- 3. 方法参数读取 ---
 		{
+			name:     "3. 隐式参数读取",
 			sourceQN: methodQN,
 			targetQN: methodQN + ".param",
+			checkMores: func(t *testing.T, m map[string]interface{}) {
+				assert.Equal(t, "param", m[java.RelRawText])
+			},
 		},
-		// --- 4. 静态字段访问 ---
 		{
+			name:     "4. 静态常量访问",
 			sourceQN: methodQN,
 			targetQN: baseQN + ".CONSTANT",
 			checkMores: func(t *testing.T, m map[string]interface{}) {
-				// 对应 Core 属性 RelCallIsStatic (Use 关系复用此逻辑)
-				assert.Equal(t, true, m[java.RelCallIsStatic])
+				assert.Equal(t, "CONSTANT", m[java.RelRawText])
+				// 注意：常量访问在 USE 中可能被标记为 identifier
+				assert.NotEmpty(t, m[java.RelAstKind])
 			},
 		},
-		// --- 5. 数组变量引用 ---
 		{
+			name:     "5. 数组引用",
 			sourceQN: methodQN,
 			targetQN: methodQN + ".arr",
 			checkMores: func(t *testing.T, m map[string]interface{}) {
-				assert.Equal(t, "identifier", m[java.RelAstKind])
+				assert.Equal(t, "array_access", m[java.RelContext])
 			},
 		},
-		// --- 8. For-each 集合读取 ---
 		{
+			name:     "8. For-each 集合读取",
 			sourceQN: methodQN,
 			targetQN: methodQN + ".list",
 			checkMores: func(t *testing.T, m map[string]interface{}) {
-				// Context 属性标识发生的大环境
 				assert.Equal(t, "enhanced_for_statement", m[java.RelContext])
+				assert.Equal(t, "list", m[java.RelRawText])
 			},
 		},
-		// --- 9. Lambda 捕获读取 ---
 		{
-			sourceQN: "$lambda", // Collector 对 lambda 生成 QN 包含此特征
+			name:     "9. Lambda 捕获外部变量",
+			sourceQN: methodQN + ".lambda$1", // 严格匹配 Collector 的 QN 规则
 			targetQN: baseQN + ".fieldVar",
 			checkMores: func(t *testing.T, m map[string]interface{}) {
-				assert.Equal(t, true, m[java.RelUseIsCapture])
-				// EnclosingMethod 溯源到外层方法
-				assert.Equal(t, methodQN, m[java.RelCallEnclosingMethod])
+				assert.Equal(t, true, m[java.RelUseIsCapture]) // java.rel.use.* 前缀
+				assert.Equal(t, "fieldVar", m[java.RelRawText])
+				// 允许校验 RelAstKind 作为 Core 属性
+				assert.Equal(t, "identifier", m[java.RelAstKind])
 			},
 		},
-		// --- 10. 类型强制转换中的读取 ---
 		{
+			name:     "10. 强转操作数读取",
 			sourceQN: methodQN,
 			targetQN: methodQN + ".obj",
 			checkMores: func(t *testing.T, m map[string]interface{}) {
-				assert.Equal(t, "cast_expression", m[java.RelAstKind])
+				assert.Equal(t, "cast_expression", m[java.RelContext])
+				assert.Equal(t, "obj", m[java.RelRawText])
 			},
 		},
 	}
 
 	// 3. 执行匹配断言
 	for _, exp := range expectedRels {
-		found := false
-		for _, rel := range allRelations {
-			// 匹配原则：类型为 USE + Target 的 QN 一致 + SourceQN 包含特征
-			if rel.Type == model.Use &&
-				rel.Target.QualifiedName == exp.targetQN &&
-				strings.Contains(rel.Source.QualifiedName, exp.sourceQN) {
+		t.Run(exp.name, func(t *testing.T) {
+			found := false
+			for _, rel := range allRelations {
+				if rel.Type == model.Use &&
+					rel.Target.QualifiedName == exp.targetQN &&
+					rel.Source.QualifiedName == exp.sourceQN {
 
-				found = true
-				if exp.checkMores != nil {
-					exp.checkMores(t, rel.Mores)
+					found = true
+					if exp.checkMores != nil {
+						// 执行 Mores 校验
+						exp.checkMores(t, rel.Mores)
+
+						// 额外的约束校验：确保 Mores 中不含有非白名单前缀的属性（模拟过滤后的结果）
+						for k := range rel.Mores {
+							isAllowed := k == java.RelRawText ||
+								k == java.RelAstKind ||
+								k == java.RelContext ||
+								strings.HasPrefix(k, "java.rel.use.")
+							assert.True(t, isAllowed, "Forbidden Mores key found: %s", k)
+						}
+					}
+					break
 				}
 			}
-		}
-		assert.True(t, found, "Missing Use relation: %s -> %s", exp.sourceQN, exp.targetQN)
+			assert.True(t, found, "Missing Use relation: %s -> %s", exp.sourceQN, exp.targetQN)
+		})
 	}
 }
 
