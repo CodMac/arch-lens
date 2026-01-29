@@ -2,8 +2,6 @@ package java
 
 import (
 	"github.com/CodMac/go-treesitter-dependency-analyzer/core"
-	"github.com/CodMac/go-treesitter-dependency-analyzer/x/java/meaning"
-
 	sitter "github.com/tree-sitter/go-tree-sitter"
 
 	tree_sitter_java "github.com/tree-sitter/tree-sitter-java/bindings/go"
@@ -14,7 +12,7 @@ func init() {
 	core.RegisterLanguage(core.LangJava, sitter.NewLanguage(tree_sitter_java.Language()))
 
 	// 注册 NoiseFilter(噪音过滤)
-	core.RegisterNoiseFilter(core.LangJava, others.NewJavaNoiseFilter())
+	core.RegisterNoiseFilter(core.LangJava, NewJavaNoiseFilter(core.LevelBalanced))
 
 	// 注册 SymbolResolver(符号解析)
 	core.RegisterSymbolResolver(core.LangJava, NewJavaSymbolResolver())

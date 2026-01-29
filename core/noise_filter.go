@@ -1,8 +1,19 @@
 package core
 
-// NoiseFilter 定义了如何识别特定语言中的背景噪音
+import "github.com/CodMac/go-treesitter-dependency-analyzer/model"
+
+// FilterLevel 定义过滤的严苛程度
+type FilterLevel int
+
+const (
+	LevelRaw      FilterLevel = iota // 不进行任何过滤，保留所有原始关系
+	LevelBalanced                    // 过滤掉外部符号中的基础背景噪音（如 Object, String）
+	LevelPure                        // 只保留源码产生的实体之间的关系 (Source -> Source)
+)
+
+// NoiseFilter 接口定义
 type NoiseFilter interface {
-	IsNoise(qualifiedName string) bool
+	IsNoise(rel model.DependencyRelation) bool
 }
 
 var noiseFilterMap = make(map[Language]NoiseFilter)
@@ -23,7 +34,13 @@ func GetNoiseFilter(lang Language) NoiseFilter {
 	return noiseFilter
 }
 
-// DefaultNoiseFilter 默认过滤器：不对任何 QN 进行噪音判定
-type DefaultNoiseFilter struct{}
+// DefaultNoiseFilter 提供基础的等级管理，供各语言 Filter 嵌入
+type DefaultNoiseFilter struct {
+	Level FilterLevel
+}
 
-func (d *DefaultNoiseFilter) IsNoise(qn string) bool { return false }
+func (d *DefaultNoiseFilter) SetLevel(level FilterLevel) {
+	d.Level = level
+}
+
+func (d *DefaultNoiseFilter) IsNoise(rel model.DependencyRelation) bool { return false }

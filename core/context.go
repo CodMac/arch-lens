@@ -86,6 +86,7 @@ func (gc *GlobalContext) RegisterFileContext(fc *FileContext) {
 		Name:          filepath.Base(fc.FilePath),
 		QualifiedName: fc.FilePath,
 		Path:          fc.FilePath,
+		IsFormSource:  true,
 	}
 	gc.DefinitionsByQN[fc.FilePath] = []*DefinitionEntry{{Element: fileElem}}
 

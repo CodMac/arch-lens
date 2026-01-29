@@ -74,10 +74,12 @@ func (l *Linker) addRel(m map[string]*model.DependencyRelation, srcKind model.El
 		Source: &model.CodeElement{
 			Kind:          srcKind,
 			QualifiedName: srcQN,
+			IsFormSource:  true,
 		},
 		Target: &model.CodeElement{
 			Kind:          tgtKind,
 			QualifiedName: tgtQN,
+			IsFormSource:  true,
 		},
 	}
 }

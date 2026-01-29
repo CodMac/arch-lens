@@ -28,7 +28,7 @@ func (j *SymbolResolver) RegisterPackage(gc *core.GlobalContext, packageName str
 		pkgQN := strings.Join(current, ".")
 		if _, ok := gc.DefinitionsByQN[pkgQN]; !ok {
 			gc.DefinitionsByQN[pkgQN] = []*core.DefinitionEntry{{
-				Element: &model.CodeElement{Kind: model.Package, Name: part, QualifiedName: pkgQN},
+				Element: &model.CodeElement{Kind: model.Package, Name: part, QualifiedName: pkgQN, IsFormSource: true},
 			}}
 		}
 	}
