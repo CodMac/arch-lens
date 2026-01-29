@@ -6,10 +6,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/CodMac/go-treesitter-dependency-analyzer/core"
-	"github.com/CodMac/go-treesitter-dependency-analyzer/model"
-	"github.com/CodMac/go-treesitter-dependency-analyzer/parser"
-	"github.com/CodMac/go-treesitter-dependency-analyzer/x/java"
+	"github.com/CodMac/arch-lens/core"
+	"github.com/CodMac/arch-lens/model"
+	"github.com/CodMac/arch-lens/parser"
+	"github.com/CodMac/arch-lens/x/java"
 
 	_ "github.com/tree-sitter/tree-sitter-go/bindings/go"
 )

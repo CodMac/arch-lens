@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/CodMac/go-treesitter-dependency-analyzer/core"
+	"github.com/CodMac/arch-lens/core"
 	sitter "github.com/tree-sitter/go-tree-sitter"
 	// 导入所有语言绑定，确保 GetLanguage 可以找到
 	_ "github.com/tree-sitter/tree-sitter-go/bindings/go"

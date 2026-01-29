@@ -6,10 +6,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/CodMac/go-treesitter-dependency-analyzer"
-	"github.com/CodMac/go-treesitter-dependency-analyzer/core"
-	"github.com/CodMac/go-treesitter-dependency-analyzer/model"
-	_ "github.com/CodMac/go-treesitter-dependency-analyzer/x/java" // 确保注册了 Java 处理器
+	"github.com/CodMac/arch-lens"
+	"github.com/CodMac/arch-lens/core"
+	"github.com/CodMac/arch-lens/model"
+	_ "github.com/CodMac/arch-lens/x/java" // 确保注册了 Java 处理器
 )
 
 func TestFileProcessor_ProcessFiles(t *testing.T) {
@@ -36,7 +36,7 @@ func TestFileProcessor_ProcessFiles(t *testing.T) {
 	os.WriteFile(fileB, []byte(codeB), 0644)
 
 	// 2. 初始化 Processor
-	fp := main.NewFileProcessor(core.LangJava, false, false, 2)
+	fp := main.NewFileProcessor(core.LangJava, false, false, 2, 0)
 
 	// 3. 执行分析
 	filePaths := []string{fileA, fileB}

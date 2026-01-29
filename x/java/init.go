@@ -1,7 +1,7 @@
 package java
 
 import (
-	"github.com/CodMac/go-treesitter-dependency-analyzer/core"
+	"github.com/CodMac/arch-lens/core"
 	sitter "github.com/tree-sitter/go-tree-sitter"
 
 	tree_sitter_java "github.com/tree-sitter/tree-sitter-java/bindings/go"

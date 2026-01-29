@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/CodMac/go-treesitter-dependency-analyzer/core"
-	"github.com/CodMac/go-treesitter-dependency-analyzer/model"
+	"github.com/CodMac/arch-lens/core"
+	"github.com/CodMac/arch-lens/model"
 	sitter "github.com/tree-sitter/go-tree-sitter"
 )
 

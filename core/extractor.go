@@ -3,7 +3,7 @@ package core
 import (
 	"fmt"
 
-	"github.com/CodMac/go-treesitter-dependency-analyzer/model"
+	"github.com/CodMac/arch-lens/model"
 )
 
 // Extractor 用于提取文件中的关系，需要全局上下文。

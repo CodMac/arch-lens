@@ -8,10 +8,10 @@ import (
 	"regexp"
 	"time"
 
-	"github.com/CodMac/go-treesitter-dependency-analyzer/core"
-	"github.com/CodMac/go-treesitter-dependency-analyzer/model"
-	"github.com/CodMac/go-treesitter-dependency-analyzer/output"
-	_ "github.com/CodMac/go-treesitter-dependency-analyzer/x/java"
+	"github.com/CodMac/arch-lens/core"
+	"github.com/CodMac/arch-lens/model"
+	"github.com/CodMac/arch-lens/output"
+	_ "github.com/CodMac/arch-lens/x/java"
 )
 
 const (
