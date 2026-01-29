@@ -55,5 +55,27 @@ public class CaptureRelationSuite {
         Runnable nested = () -> {
             Runnable inner = () -> System.out.println(localVal);
         };
+
+        // 7. Lambda 对成员变量赋值 (Assign)
+        // 注意：这里语法上是在 Lambda 内对 fieldData 赋值，
+        // 但底层原理是捕获了 'this' 指针，然后通过 this.fieldData = "modified" 进行修改。
+        // Source: com.example.rel.CaptureRelationSuite.testCaptures(String).lambda$6
+        // Target: com.example.rel.CaptureRelationSuite.fieldData
+        // Mores: { "java.rel.ast_kind": "identifier", "java.rel.raw_text": "fieldData" }
+        Runnable r3 = () -> {
+            fieldData = "modified";
+        };
+
+        // 8. 匿名内部类对成员变量赋值 (Assign)
+        // 同样，匿名内部类持有外部类实例的引用（CaptureRelationSuite.this），因此可以赋值。
+        // Source: com.example.rel.CaptureRelationSuite.testCaptures(String).anonymousClass$2.run()
+        // Target: com.example.rel.CaptureRelationSuite.fieldData
+        // Mores: { "java.rel.ast_kind": "identifier", "java.rel.raw_text": "fieldData" }
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                fieldData = "modifiedByAnon";
+            }
+        }).start();
     }
 }

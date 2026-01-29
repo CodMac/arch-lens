@@ -57,10 +57,12 @@ const (
 	RelAssignIsInitializer   = "java.rel.assign.is_initializer"   // 是否为声明时的初始化赋值 (如 int i = 0)
 	RelAssignValueExpression = "java.rel.assign.value_expression" // 赋值语句右侧的原始表达式文本
 	RelAssignIsCapture       = "java.rel.assign.is_capture"       // 是否为跨作用域的变量捕获赋值
+	RelAssignEnclosingMethod = "java.rel.assign.enclosing_method" // 赋值发生的外部方法 QN (常用于 Lambda/内部类溯源)
 	RelCreateIsArray         = "java.rel.create.is_array"         // 是否为数组实例化
 	RelCreateVariableName    = "java.rel.create.variable_name"    // 接收实例化对象的变量名
 	RelUseReceiver           = "java.rel.use.receiver"            // 实例字段访问的接收者 (如 "this")
 	RelUseIsCapture          = "java.rel.use.is_capture"          // 是否为跨作用域的变量捕获引用
+	RelUseEnclosingMethod    = "java.rel.use.enclosing_method"    // 引用发生的外部方法 QN (常用于 Lambda/内部类溯源)
 	RelAnnotationTarget      = "java.rel.annotation.target"       //
 	RelThrowIndex            = "java.rel.throw.index"             // 在 throws 声明列表中的位置索引 (从 0 开始)
 	RelThrowIsSignature      = "java.rel.throw.is_signature"      // 是否为方法签名中 throws 关键字后的声明
@@ -72,6 +74,7 @@ const (
 	RelReturnIsPrimitive     = "java.rel.return.is_primitive"     // 返回类型是否为 Java 基础类型 (int, byte, etc.)
 	RelReturnIsArray         = "java.rel.return.is_array"         // 返回类型是否为数组
 	RelTypeArgIndex          = "java.rel.type_arg.index"          // 泛型参数的位置索引 (0 表示第一个参数)
+	RelCastIsInstanceof      = "java.rel.cast.is_instanceof"      // 是否instanceof类型的强转
 )
 
 // --- Extended属性 (这里是定义的一些属性增强，建议按业务需求定制提取)  ---
@@ -107,7 +110,6 @@ const (
 	RelUseCallSite               = "java.rel.use.call_site"                // 作为参数传递时，被调用的方法名
 	RelUseArgumentIndex          = "java.rel.use.argument_index"           // 作为参数传递时，所在的位置索引 (从 0 开始)
 	RelUseContext                = "java.rel.use.context"                  // 使用的上下文语义 (如 "if_condition", "while_condition")
-	RelUseEnclosingMethod        = "java.rel.use.enclosing_method"         // 捕获发生时所在的方法
 	RelUseTargetType             = "java.rel.use.target_type"              // 类型转换中使用时的目标类型
 	RelCastOperandExpression     = "java.rel.cast.operand_expression"      // 转型操作数的原始文本 (如 "(String) obj" 中的 "obj")
 	RelCastOperandKind           = "java.rel.cast.operand_kind"            // 操作数种类 (如 "variable", "method_invocation", "literal")

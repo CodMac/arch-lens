@@ -58,5 +58,17 @@ const JavaActionQuery = `
       (identifier) @throw_target
     ]
   ) @throw_stmt
+
+  ; 9. 显式类型转换 (Cast)
+  ; 对应: (String) input, (int) val, (List<String>) obj
+  (cast_expression 
+    type: (_) @cast_target
+  ) @cast_stmt
+
+  ; 10. 类型检查与模式匹配 (Instanceof)
+  ; 对应: obj instanceof String, obj instanceof String s
+  (instanceof_expression 
+    right: (_) @cast_target
+  ) @instanceof_stmt
 ]
 `
