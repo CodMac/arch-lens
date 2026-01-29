@@ -14,6 +14,7 @@ const (
 // NoiseFilter 接口定义
 type NoiseFilter interface {
 	IsNoise(rel model.DependencyRelation) bool
+	SetLevel(level FilterLevel)
 }
 
 var noiseFilterMap = make(map[Language]NoiseFilter)

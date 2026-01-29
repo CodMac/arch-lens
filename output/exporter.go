@@ -18,21 +18,18 @@ const (
 )
 
 type Exporter struct {
-	outputDir    string
-	outputType   OutType
-	skipExternal bool
-	filter       core.NoiseFilter
+	outputDir  string
+	outputType OutType
 }
 
-func NewExporter(outputDir string, outputType OutType, skipExternal bool, filter core.NoiseFilter) *Exporter {
-	return &Exporter{outputDir: outputDir, outputType: outputType, skipExternal: skipExternal, filter: filter}
+func NewExporter(outputDir string, outputType OutType) *Exporter {
+	return &Exporter{outputDir: outputDir, outputType: outputType}
 }
 
 func (p *Exporter) ExportJsonL(gCtx *core.GlobalContext, rels []*model.DependencyRelation) (int, int, error) {
 	elemPath := filepath.Join(p.outputDir, "element.jsonl")
 	relPath := filepath.Join(p.outputDir, "relation.jsonl")
 
-	// 导出
 	elemFile, err := os.Create(elemPath)
 	if err != nil {
 		return 0, 0, err
@@ -47,6 +44,7 @@ func (p *Exporter) ExportJsonL(gCtx *core.GlobalContext, rels []*model.Dependenc
 
 	elemWriter := NewJSONLWriter(elemFile)
 	elemCount := 0
+	// 导出 GlobalContext 中记录的所有定义
 	for _, entries := range gCtx.DefinitionsByQN {
 		for _, entry := range entries {
 			elemWriter.Write(entry.Element)
@@ -57,18 +55,6 @@ func (p *Exporter) ExportJsonL(gCtx *core.GlobalContext, rels []*model.Dependenc
 	relWriter := NewJSONLWriter(relFile)
 	relCount := 0
 	for _, rel := range rels {
-		if p.skipExternal && p.filter != nil {
-			// 过滤逻辑待补充
-			if p.filter.IsNoise(rel.Target.QualifiedName) {
-				continue
-			}
-
-			_, exists := gCtx.DefinitionsByQN[rel.Target.QualifiedName]
-			if !exists {
-				continue
-			}
-		}
-
 		relWriter.Write(rel)
 		relCount++
 	}
@@ -79,7 +65,6 @@ func (p *Exporter) ExportJsonL(gCtx *core.GlobalContext, rels []*model.Dependenc
 func (p *Exporter) ExportMermaidHTML(gCtx *core.GlobalContext, rels []*model.DependencyRelation) (int, int, error) {
 	htmlPath := filepath.Join(p.outputDir, "visualization.html")
 
-	// 导出
 	f, err := os.Create(htmlPath)
 	if err != nil {
 		return 0, 0, err
@@ -90,30 +75,25 @@ func (p *Exporter) ExportMermaidHTML(gCtx *core.GlobalContext, rels []*model.Dep
 <body><div class="mermaid">graph LR`)
 
 	elemCount := 0
+	// 1. 绘制子图结构 (File -> Elements)
 	for _, fCtx := range gCtx.FileContexts {
 		fmt.Fprintf(f, "  subgraph %s [📄 %s]\n", safeID(fCtx.FilePath), fCtx.FilePath)
 		for _, entries := range fCtx.DefinitionsBySN {
 			for _, entry := range entries {
 				nodeID := safeID(entry.Element.QualifiedName)
-				fmt.Fprintf(f, "    %s%s\n", nodeID, getNodeShape(entry.Element.Kind, entry.Element.Name))
-
+				fmt.Fprintf(f, "    %s%s\n", nodeID, getNodeShape(entry.Element))
 				elemCount++
 			}
 		}
 		fmt.Fprintln(f, "  end")
 	}
 
+	// 2. 绘制依赖线条
 	relCount := 0
 	for _, rel := range rels {
-		if p.skipExternal && p.filter != nil {
-			if p.filter.IsNoise(rel.Target.QualifiedName) {
-				continue
-			}
-
-			_, exists := gCtx.DefinitionsByQN[rel.Target.QualifiedName]
-			if !exists {
-				continue
-			}
+		// 跳过包含关系，因为 subgraph 已经体现了
+		if rel.Type == model.Contain {
+			continue
 		}
 
 		srcID, tgtID := safeID(rel.Source.QualifiedName), safeID(rel.Target.QualifiedName)
@@ -121,8 +101,13 @@ func (p *Exporter) ExportMermaidHTML(gCtx *core.GlobalContext, rels []*model.Dep
 			continue
 		}
 
-		fmt.Fprintf(f, "  %s -- %s --> %s\n", srcID, rel.Type, tgtID)
+		// 如果目标是外部符号且通过了过滤，给它一个特殊样式
+		edgeStyle := ""
+		if rel.Target.IsFormExternal {
+			edgeStyle = "---" // 外部依赖用虚线或不同颜色区分
+		}
 
+		fmt.Fprintf(f, "  %s -- %s --> %s%s\n", srcID, rel.Type, tgtID, edgeStyle)
 		relCount++
 	}
 
@@ -131,22 +116,24 @@ func (p *Exporter) ExportMermaidHTML(gCtx *core.GlobalContext, rels []*model.Dep
 	return elemCount, relCount, nil
 }
 
-// 辅助函数
-
 func safeID(id string) string {
-	r := strings.NewReplacer(".", "_", "(", "_", ")", "_", "[", "_", "]", "_", " ", "_", "@", "at")
+	r := strings.NewReplacer(".", "_", "(", "_", ")", "_", "[", "_", "]", "_", " ", "_", "@", "at", "$", "_")
 	return "n_" + r.Replace(id)
 }
 
-func getNodeShape(kind model.ElementKind, name string) string {
-	switch kind {
+func getNodeShape(el *model.CodeElement) string {
+	name := el.Name
+	if el.IsFormExternal {
+		name = name + " (ext)"
+	}
+	switch el.Kind {
 	case model.Interface:
-		return fmt.Sprintf("([\"%s <small>(%s)</small>\"])", name, kind)
+		return fmt.Sprintf("([\"%s <small>(%s)</small>\"])", name, el.Kind)
 	case model.Class:
-		return fmt.Sprintf("[\"%s <small>(%s)</small>\"]", name, kind)
+		return fmt.Sprintf("[\"%s <small>(%s)</small>\"]", name, el.Kind)
 	case model.Method:
-		return fmt.Sprintf("[/\"%s <small>(%s)</small>\"/]", name, kind)
+		return fmt.Sprintf("[/\"%s <small>(%s)</small>\"/]", name, el.Kind)
 	default:
-		return fmt.Sprintf("[\"%s <small>(%s)</small>\"]", name, kind)
+		return fmt.Sprintf("[\"%s <small>(%s)</small>\"]", name, el.Kind)
 	}
 }

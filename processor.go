@@ -14,9 +14,11 @@ type FileProcessor struct {
 	OutputAST   bool
 	FormatAST   bool
 	Concurrency int
+	// 新增：过滤等级配置
+	FilterLevel core.FilterLevel
 }
 
-func NewFileProcessor(lang core.Language, outputAST, formatAST bool, concurrency int) *FileProcessor {
+func NewFileProcessor(lang core.Language, outputAST, formatAST bool, concurrency int, filterLevel core.FilterLevel) *FileProcessor {
 	if concurrency <= 0 {
 		concurrency = 4
 	}
@@ -25,6 +27,7 @@ func NewFileProcessor(lang core.Language, outputAST, formatAST bool, concurrency
 		OutputAST:   outputAST,
 		FormatAST:   formatAST,
 		Concurrency: concurrency,
+		FilterLevel: filterLevel,
 	}
 }
 
@@ -63,7 +66,6 @@ func (fp *FileProcessor) ProcessFiles(rootPath string, filePaths []string) ([]*m
 	}
 
 	// --- 阶段 2: 拓扑链接 (Linker) ---
-	// 这一步由语言插件决定如何构建层级，Processor 保持中立
 	linker, err := core.GetLinker(fp.Language)
 	if err != nil {
 		return nil, nil, err
@@ -72,6 +74,7 @@ func (fp *FileProcessor) ProcessFiles(rootPath string, filePaths []string) ([]*m
 
 	// --- 阶段 3: 并行提取依赖 (Extractor) ---
 	var allRelations []*model.DependencyRelation
+	// 初始放入层级关系（注意：根据讨论，Contain 关系通常不作为噪音过滤）
 	allRelations = append(allRelations, hierarchyRels...)
 
 	var mu sync.Mutex
@@ -100,8 +103,35 @@ func (fp *FileProcessor) ProcessFiles(rootPath string, filePaths []string) ([]*m
 		}
 		return nil
 	})
+	if err != nil {
+		return nil, nil, err
+	}
 
-	return allRelations, globalContext, err
+	// --- 阶段 4: 噪音过滤 (Noise Filtering) ---
+	// 在所有关系收集完毕后，根据设定的 Level 进行统一清洗
+	filteredRelations := fp.filterNoise(allRelations)
+
+	return filteredRelations, globalContext, nil
+}
+
+// filterNoise 调用语言特定的过滤器进行数据清洗
+func (fp *FileProcessor) filterNoise(rels []*model.DependencyRelation) []*model.DependencyRelation {
+	filter := core.GetNoiseFilter(fp.Language)
+	filter.SetLevel(fp.FilterLevel)
+
+	// 如果是 Raw 级别，直接返回
+	if fp.FilterLevel == core.LevelRaw {
+		return rels
+	}
+
+	result := make([]*model.DependencyRelation, 0, len(rels))
+	for _, rel := range rels {
+		// 如果不是噪音，则保留
+		if !filter.IsNoise(*rel) {
+			result = append(result, rel)
+		}
+	}
+	return result
 }
 
 // runParallel 内部并发调度器
