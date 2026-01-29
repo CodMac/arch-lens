@@ -2,6 +2,7 @@ package java
 
 import (
 	"github.com/CodMac/go-treesitter-dependency-analyzer/core"
+	"github.com/CodMac/go-treesitter-dependency-analyzer/x/java/meaning"
 
 	sitter "github.com/tree-sitter/go-tree-sitter"
 
@@ -13,7 +14,7 @@ func init() {
 	core.RegisterLanguage(core.LangJava, sitter.NewLanguage(tree_sitter_java.Language()))
 
 	// 注册 NoiseFilter(噪音过滤)
-	core.RegisterNoiseFilter(core.LangJava, NewJavaNoiseFilter())
+	core.RegisterNoiseFilter(core.LangJava, others.NewJavaNoiseFilter())
 
 	// 注册 SymbolResolver(符号解析)
 	core.RegisterSymbolResolver(core.LangJava, NewJavaSymbolResolver())
@@ -22,5 +23,8 @@ func init() {
 	core.RegisterCollector(core.LangJava, NewJavaCollector())
 
 	// 注册 Extractor
-	//core.RegisterExtractor(core.LangJava, NewJavaExtractor())
+	core.RegisterExtractor(core.LangJava, NewJavaExtractor())
+
+	// 注册 Linker
+	core.RegisterLinker(core.LangJava, NewJavaLinker())
 }

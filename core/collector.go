@@ -6,7 +6,7 @@ import (
 	sitter "github.com/tree-sitter/go-tree-sitter"
 )
 
-// Collector 用于收集符号定义。
+// Collector 用于收集文件中的符号定义。
 type Collector interface {
 	// CollectDefinitions 负责遍历 AST，建立并返回该文件的 FileContext。
 	CollectDefinitions(rootNode *sitter.Node, filePath string, sourceBytes *[]byte) (*FileContext, error)
