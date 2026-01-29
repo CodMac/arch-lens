@@ -11,7 +11,6 @@ import (
 	"github.com/CodMac/go-treesitter-dependency-analyzer/core"
 	"github.com/CodMac/go-treesitter-dependency-analyzer/model"
 	"github.com/CodMac/go-treesitter-dependency-analyzer/output"
-	"github.com/CodMac/go-treesitter-dependency-analyzer/processor"
 	_ "github.com/CodMac/go-treesitter-dependency-analyzer/x/java" // 插件注册
 )
 
@@ -44,7 +43,7 @@ func main() {
 
 	// 2. 执行核心分析过程
 	fmt.Fprintf(os.Stderr, "[2/4] ⚙️  正在并发分析代码符号与关系 (CGO_ENABLED=1)...\n")
-	proc := processor.NewFileProcessor(core.Language(cfg.Lang), false, false, cfg.Jobs)
+	proc := NewFileProcessor(core.Language(cfg.Lang), false, false, cfg.Jobs)
 	rels, gCtx, err := proc.ProcessFiles(cfg.SourcePath, files)
 	if err != nil {
 		exitWithError("分析执行失败", err)
