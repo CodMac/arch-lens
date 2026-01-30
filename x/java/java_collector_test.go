@@ -1655,6 +1655,59 @@ func TestJavaCollector_ScopeAndShadowing(t *testing.T) {
 	})
 }
 
+func TestJavaCollector_ScopeVariable(t *testing.T) {
+	// 1. 初始化解析环境
+	filePath := getTestFilePath(filepath.Join("com", "example", "base", "test", "ScopeVariableTest.java"))
+	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, true, true)
+	if err != nil {
+		t.Fatalf("Failed to parse file: %v", err)
+	}
+
+	// 2. 执行 Collector
+	collector := java.NewJavaCollector()
+	fCtx, err := collector.CollectDefinitions(rootNode, filePath, sourceBytes)
+	if err != nil {
+		t.Fatalf("CollectDefinitions failed: %v", err)
+	}
+
+	printCodeElements(fCtx)
+
+	// --- 断言开始 ---
+	// 定义期望的变量路径 (相对于包名 com.example.base.test)
+	baseQN := "com.example.base.test.ScopeVariableTest.test()"
+
+	expectedScopes := map[string]string{
+		"bis":  baseQN + ".block$1.bis",
+		"e":    baseQN + ".block$2.e",
+		"i":    baseQN + ".block$3.i",
+		"item": baseQN + ".block$4.item",
+		"s":    baseQN + ".block$5.s",
+		"list": baseQN + ".list", // list 是方法一级变量，不进入 block
+		"obj":  baseQN + ".obj",  // obj 同上
+	}
+
+	for varName, expectedQN := range expectedScopes {
+		t.Run("Verify_"+varName, func(t *testing.T) {
+			entries, ok := fCtx.DefinitionsBySN[varName]
+			if !ok || len(entries) == 0 {
+				t.Fatalf("Variable %s not found in definitions", varName)
+			}
+
+			// 验证 QN 是否匹配
+			actualQN := entries[0].Element.QualifiedName
+			if actualQN != expectedQN {
+				t.Errorf("Variable %s QN mismatch:\n  Expected: %s\n  Actual:   %s",
+					varName, expectedQN, actualQN)
+			}
+
+			// 验证 Kind 是否为 Variable
+			if entries[0].Element.Kind != model.Variable {
+				t.Errorf("Variable %s has wrong kind: %v", varName, entries[0].Element.Kind)
+			}
+		})
+	}
+}
+
 func TestJavaCollector_SyntacticSugar_Step1(t *testing.T) {
 	// 1. 初始化解析环境
 	filePath := getTestFilePath(filepath.Join("com", "example", "sugar", "SugarClassTest.java"))
@@ -1808,65 +1861,84 @@ func TestJavaCollector_RecordSugar(t *testing.T) {
 }
 
 func TestJavaCollector_TryWithResources(t *testing.T) {
+	// 1. 初始化解析环境
+	// 假设文件路径为 com/example/sugar/TryWithResourcesTest.java
 	filePath := getTestFilePath(filepath.Join("com", "example", "sugar", "TryWithResourcesTest.java"))
-	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, false, false)
+	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, true, true)
 	if err != nil {
-		t.Fatalf("Parse error: %v", err)
+		t.Fatalf("Failed to parse file: %v", err)
 	}
 
+	// 2. 执行 Collector
 	collector := java.NewJavaCollector()
 	fCtx, err := collector.CollectDefinitions(rootNode, filePath, sourceBytes)
 	if err != nil {
 		t.Fatalf("CollectDefinitions failed: %v", err)
 	}
 
+	// 打印结果便于调试
 	printCodeElements(fCtx)
 
-	// 1. 验证标准资源定义 (input)
-	t.Run("Verify Single Resource Definition", func(t *testing.T) {
-		qn := "com.example.sugar.TryWithResourcesTest.test().input"
-		defs := findDefinitionsByQN(fCtx, qn)
-		if len(defs) == 0 {
-			t.Fatalf("Resource variable 'input' not found")
+	// --- 断言开始 ---
+	baseQN := "com.example.sugar.TryWithResourcesTest.test()"
+
+	// 场景 1: 验证标准定义 (input 应该在第一个 block 中)
+	t.Run("Scenario_SingleResource", func(t *testing.T) {
+		varName := "input"
+		expectedQN := baseQN + ".block$1.input"
+
+		entries, ok := fCtx.DefinitionsBySN[varName]
+		if !ok || len(entries) == 0 {
+			t.Fatalf("Variable %s not found", varName)
 		}
 
-		elem := defs[0].Element
-		if elem.Kind != model.Variable {
-			t.Errorf("Expected VARIABLE kind, got %s", elem.Kind)
-		}
-
-		// 检查元数据中的类型
-		vType, _ := elem.Extra.Mores[java.VariableType].(string)
-		if vType != "InputStream" {
-			t.Errorf("Expected type InputStream, got %s", vType)
-		}
-	})
-
-	// 2. 验证多个资源定义及其 QN 唯一性 (out, in)
-	t.Run("Verify Multiple Resources", func(t *testing.T) {
-		// 检查 out
-		qnOut := "com.example.sugar.TryWithResourcesTest.test().out"
-		if len(findDefinitionsByQN(fCtx, qnOut)) == 0 {
-			t.Errorf("Resource 'out' not found at %s", qnOut)
-		}
-
-		// 检查 in
-		qnIn := "com.example.sugar.TryWithResourcesTest.test().in"
-		if len(findDefinitionsByQN(fCtx, qnIn)) == 0 {
-			t.Errorf("Resource 'in' not found at %s", qnIn)
+		actualQN := entries[0].Element.QualifiedName
+		if actualQN != expectedQN {
+			t.Errorf("Variable %s QN mismatch:\n  Expected: %s\n  Actual:   %s", varName, expectedQN, actualQN)
 		}
 	})
 
-	// 3. 验证元数据标记
-	t.Run("Verify Resource Metadata", func(t *testing.T) {
-		qn := "com.example.sugar.TryWithResourcesTest.test().input"
-		defs := findDefinitionsByQN(fCtx, qn)
-		elem := defs[0].Element
+	// 场景 2: 验证多个资源及其唯一性 (out 和 in 应该都在第二个 block 中)
+	t.Run("Scenario_MultipleResources", func(t *testing.T) {
+		resources := []struct {
+			name     string
+			expected string
+		}{
+			{"out", baseQN + ".block$2.out"},
+			{"in", baseQN + ".block$2.in"},
+		}
 
-		// Resource 变量不应该被误认为是方法参数
-		isParam, _ := elem.Extra.Mores[java.VariableIsParam].(bool)
-		if isParam {
-			t.Errorf("Resource variable should NOT be marked as Method Parameter")
+		for _, res := range resources {
+			entries, ok := fCtx.DefinitionsBySN[res.name]
+			if !ok || len(entries) == 0 {
+				t.Errorf("Variable %s not found", res.name)
+				continue
+			}
+
+			actualQN := entries[0].Element.QualifiedName
+			if actualQN != res.expected {
+				t.Errorf("Variable %s QN mismatch:\n  Expected: %s\n  Actual:   %s", res.name, res.expected, actualQN)
+			}
+
+			// 额外验证：父级应该是同一个 block$2
+			if entries[0].ParentQN != baseQN+".block$2" {
+				t.Errorf("Variable %s has wrong ParentQN: %s", res.name, entries[0].ParentQN)
+			}
+		}
+	})
+
+	// 验证：方法下应该只有 2 个 block
+	t.Run("Verify_BlockCount", func(t *testing.T) {
+		blocks := fCtx.DefinitionsBySN["block"]
+		// 注意：这里需要过滤出属于 test() 方法下的 block
+		count := 0
+		for _, b := range blocks {
+			if strings.HasPrefix(b.Element.QualifiedName, baseQN) {
+				count++
+			}
+		}
+		if count != 2 {
+			t.Errorf("Expected 2 blocks in test(), but found %d", count)
 		}
 	})
 }

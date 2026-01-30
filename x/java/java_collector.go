@@ -35,10 +35,13 @@ func (c *Collector) CollectDefinitions(rootNode *sitter.Node, filePath string, s
 	nameOccurrence := make(map[string]int)
 	c.collectBasicDefinitions(fCtx.RootNode, fCtx, fCtx.PackageName, nameOccurrence)
 
-	// Step 3: 元数据增强 (Metadata & Signatures)
+	// Step 3: 修正特殊作用域变量的 QN
+	c.refineVariableScopes(fCtx)
+
+	// Step 4: 元数据增强 (Metadata & Signatures)
 	c.enrichMetadata(fCtx)
 
-	// Step 4: 语法糖处理 (Records, Enums, Constructors)
+	// Step 5: 语法糖处理 (Records, Enums, Constructors)
 	c.applySyntacticSugar(fCtx)
 
 	return fCtx, nil
@@ -84,6 +87,53 @@ func (c *Collector) collectBasicDefinitions(node *sitter.Node, fCtx *core.FileCo
 	}
 }
 
+func (c *Collector) refineVariableScopes(fCtx *core.FileContext) {
+	// 获取所有已注册的 block，用于后续比对
+	blocks := fCtx.DefinitionsBySN["block"]
+	if len(blocks) == 0 {
+		return
+	}
+
+	for _, entries := range fCtx.DefinitionsBySN {
+		for _, entry := range entries {
+			// 仅针对变量进行作用域修正
+			if entry.Element.Kind != model.Variable {
+				continue
+			}
+
+			// 1. 向上寻找最近的逻辑容器 (try/for/if/catch)
+			containerNode := c.findNearestBlockParent(entry.Node)
+			if containerNode == nil {
+				continue
+			}
+
+			// 2. 遍历容器的子节点，寻找该变量逻辑上所属的 block 节点
+			for i := 0; i < int(containerNode.ChildCount()); i++ {
+				child := containerNode.Child(uint(i))
+				// 只有当子节点是 block，且不是变量自身的定义节点时才处理
+				if child.Kind() != "block" {
+					continue
+				}
+
+				// 3. 在已采集的定义中，通过 Location 匹配找到对应的 block 实体
+				for _, bDef := range blocks {
+					if c.matchLocation(child, bDef.Element) {
+						newParentQN := bDef.Element.QualifiedName
+
+						// 4. 更新 ParentQN 并重新构建 QualifiedName
+						entry.ParentQN = newParentQN
+						entry.Element.QualifiedName = c.resolver.BuildQualifiedName(newParentQN, entry.Element.Name)
+
+						// 一旦找到匹配的 block 并完成重定位，即可跳出当前变量的查找
+						goto nextVariable
+					}
+				}
+			}
+		nextVariable:
+		}
+	}
+}
+
 // =============================================================================
 // 2. 元素识别逻辑 (Element Identification)
 // =============================================================================
@@ -102,30 +152,30 @@ func (c *Collector) identifyElement(node *sitter.Node, fCtx *core.FileContext, p
 		kind = model.Enum
 	case "enum_constant":
 		kind = model.EnumConstant
-		name = c.getNodeContent(node.ChildByFieldName("name"), *fCtx.SourceBytes)
 	case "annotation_type_declaration":
-		kind, name = model.KAnnotation, c.getNodeContent(node.ChildByFieldName("name"), *fCtx.SourceBytes)
-	case "annotation_type_element_declaration":
-		kind, name = model.Method, c.getNodeContent(node.ChildByFieldName("name"), *fCtx.SourceBytes)
-	case "method_declaration", "constructor_declaration":
+		kind = model.KAnnotation
+	case "annotation_type_element_declaration", "method_declaration", "constructor_declaration":
 		kind = model.Method
-	case "field_declaration", "local_variable_declaration":
-		kind = c.determineVariableKind(kindStr)
+	case "field_declaration":
+		kind = model.Field
 		name = c.extractVariableName(node, fCtx.SourceBytes)
-	case "formal_parameter", "spread_parameter":
+	case "local_variable_declaration", "formal_parameter", "spread_parameter", "resource", "catch_formal_parameter":
 		kind, name = model.Variable, c.extractVariableName(node, fCtx.SourceBytes)
-	case "resource": // try-catch 参数
-		kind, name = model.Variable, c.getNodeContent(node.ChildByFieldName("name"), *fCtx.SourceBytes)
+	case "enhanced_for_statement", "instanceof_expression":
+		if nameNode := node.ChildByFieldName("name"); nameNode != nil {
+			kind = model.Variable
+			name = c.getNodeContent(nameNode, *fCtx.SourceBytes)
+		}
 	case "lambda_expression":
 		kind, name = model.Lambda, "lambda"
-	case "method_reference": // 方法引用
+	case "method_reference":
 		kind, name = model.MethodRef, "method_ref"
+	case "static_initializer":
+		kind, name = model.ScopeBlock, "$static"
 	case "identifier":
 		if k, n := c.identifyLambdaParameter(node, fCtx); k != "" {
 			kind, name = k, n
 		}
-	case "static_initializer":
-		kind, name = model.ScopeBlock, "$static"
 	case "block":
 		kind, name = c.identifyBlockType(node)
 	case "object_creation_expression":
@@ -753,11 +803,11 @@ func (c *Collector) extractLocation(n *sitter.Node, filePath string) *model.Loca
 	}
 }
 
-func (c *Collector) determineVariableKind(kindStr string) model.ElementKind {
-	if kindStr == "local_variable_declaration" {
-		return model.Variable
-	}
-	return model.Field
+func (c *Collector) matchLocation(n *sitter.Node, ele *model.CodeElement) bool {
+	return (int(n.StartPosition().Row)+1 == ele.Location.StartLine) &&
+		(int(n.EndPosition().Row)+1 == ele.Location.EndLine) &&
+		(int(n.StartPosition().Column) == ele.Location.StartColumn) &&
+		(int(n.EndPosition().Column) == ele.Location.EndColumn)
 }
 
 func (c *Collector) extractParameterList(node *sitter.Node, src *[]byte) []string {
@@ -825,4 +875,25 @@ func (c *Collector) findDefinitionsByQN(fCtx *core.FileContext, qn string) []*co
 		}
 	}
 	return result
+}
+
+func (c *Collector) findNearestBlockParent(node *sitter.Node) *sitter.Node {
+	// for(String s : list)
+	if node.Kind() == "enhanced_for_statement" {
+		return node
+	}
+
+	// 往上查找
+	curr := node.Parent()
+	for curr != nil {
+		k := curr.Kind()
+		if k == "for_statement" || k == "try_with_resources_statement" || k == "catch_clause" || k == "if_statement" {
+			return curr
+		}
+		if k == "method_declaration" || k == "class_declaration" {
+			break
+		}
+		curr = curr.Parent()
+	}
+	return nil
 }
