@@ -631,7 +631,7 @@ func (e *Extractor) mapAction(capName string, node *sitter.Node, fCtx *core.File
 		cleanSymbol := e.clean(symbol)
 		switch kind {
 		case model.Method:
-			return e.quickResolve(cleanSymbol, kind, gCtx, fCtx)
+			return e.quickResolveMethod(cleanSymbol, node, gCtx, fCtx)
 		case model.Field, model.Variable:
 			return e.quickResolveVariable(cleanSymbol, node, fCtx)
 		default:
@@ -871,6 +871,69 @@ func (e *Extractor) quickResolveVariable(name string, node *sitter.Node, fCtx *c
 		return bestMatch.Element
 	}
 	return nil
+}
+
+func (e *Extractor) quickResolveMethod(symbol string, node *sitter.Node, gCtx *core.GlobalContext, fCtx *core.FileContext) *model.CodeElement {
+	cleanName := e.clean(symbol)
+
+	// 1. 获取调用处的实参数量 (用于初步重载过滤)
+	argCount := -1
+	callNode := e.findNearestKind(node, "method_invocation", "object_creation_expression", "explicit_constructor_invocation")
+	if callNode != nil {
+		if args := callNode.ChildByFieldName("arguments"); args != nil {
+			// tree-sitter 中 argument_list 的命名子节点即为实参
+			argCount = int(args.NamedChildCount())
+		}
+	}
+
+	// 2. 尝试从 GlobalContext 解析符号
+	// gCtx.ResolveSymbol 会根据 Import 和当前 Package 返回可能的定义列表
+	entries := gCtx.ResolveSymbol(fCtx, cleanName)
+	if len(entries) > 0 {
+		// 策略 A: 匹配重载
+		var bestMatch *core.DefinitionEntry
+		for _, entry := range entries {
+			if entry.Element.Kind != model.Method {
+				continue
+			}
+
+			// 简单的重载启发式匹配：匹配参数数量
+			if params, ok := entry.Element.Extra.Mores[MethodParameters].([]string); ok {
+				if len(params) == argCount {
+					bestMatch = entry
+					break
+				}
+			}
+		}
+
+		if bestMatch != nil {
+			return bestMatch.Element
+		}
+		// 如果没找到完美匹配，返回第一个找到的方法定义（通常是父类或当前类的某个重载）
+		return entries[0].Element
+	}
+
+	// 3. 继承匹配与溯源逻辑 (启发式)
+	// 如果本地索引没找到，可能是在外部库或基类中
+	// 尝试寻找 Receiver 类型（例如 ((String)s).substring() 中的 String）
+	qualifiedName := cleanName
+	if callNode != nil && callNode.Kind() == "method_invocation" {
+		if obj := callNode.ChildByFieldName("object"); obj != nil {
+			receiverText := obj.Utf8Text(*fCtx.SourceBytes)
+			// 如果能识别出 Receiver 是某个类，拼接 QualifiedName
+			if e.isPotentialClassName(receiverText) {
+				qualifiedName = receiverText + "." + cleanName
+			}
+		}
+	}
+
+	// 4. 回退到外部引用
+	return &model.CodeElement{
+		Name:           cleanName,
+		QualifiedName:  qualifiedName,
+		Kind:           model.Method,
+		IsFormExternal: true,
+	}
 }
 
 func (e *Extractor) toLoc(n sitter.Node, path string) *model.Location {
