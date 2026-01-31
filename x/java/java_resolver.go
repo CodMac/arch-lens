@@ -3,8 +3,8 @@ package java
 import (
 	"strings"
 
-	"github.com/CodMac/go-treesitter-dependency-analyzer/context"
-	"github.com/CodMac/go-treesitter-dependency-analyzer/model"
+	"github.com/CodMac/arch-lens/core"
+	"github.com/CodMac/arch-lens/model"
 )
 
 type SymbolResolver struct{}
@@ -20,21 +20,21 @@ func (j *SymbolResolver) BuildQualifiedName(parentQN, name string) string {
 	return parentQN + "." + name
 }
 
-func (j *SymbolResolver) RegisterPackage(gc *context.GlobalContext, packageName string) {
+func (j *SymbolResolver) RegisterPackage(gc *core.GlobalContext, packageName string) {
 	parts := strings.Split(packageName, ".")
 	var current []string
 	for _, part := range parts {
 		current = append(current, part)
 		pkgQN := strings.Join(current, ".")
 		if _, ok := gc.DefinitionsByQN[pkgQN]; !ok {
-			gc.DefinitionsByQN[pkgQN] = []*context.DefinitionEntry{{
-				Element: &model.CodeElement{Kind: model.Package, Name: part, QualifiedName: pkgQN},
+			gc.DefinitionsByQN[pkgQN] = []*core.DefinitionEntry{{
+				Element: &model.CodeElement{Kind: model.Package, Name: part, QualifiedName: pkgQN, IsFormSource: true},
 			}}
 		}
 	}
 }
 
-func (j *SymbolResolver) Resolve(gc *context.GlobalContext, fc *context.FileContext, symbol string) []*context.DefinitionEntry {
+func (j *SymbolResolver) Resolve(gc *core.GlobalContext, fc *core.FileContext, symbol string) []*core.DefinitionEntry {
 	gc.RLock()
 	defer gc.RUnlock()
 
@@ -44,9 +44,14 @@ func (j *SymbolResolver) Resolve(gc *context.GlobalContext, fc *context.FileCont
 	}
 
 	// 2. 精确导入
-	if imp, ok := fc.Imports[symbol]; ok {
-		if defs, found := gc.DefinitionsByQN[imp.RawImportPath]; found {
-			return defs
+	if imps, ok := fc.Imports[symbol]; ok {
+		for _, imp := range imps {
+			// 仅import的源码符号才有可能在上下文中被发现，外部导入直接返回nil
+			if defs, found := gc.DefinitionsByQN[imp.RawImportPath]; found {
+				return defs
+			} else {
+				return nil
+			}
 		}
 	}
 
@@ -57,11 +62,13 @@ func (j *SymbolResolver) Resolve(gc *context.GlobalContext, fc *context.FileCont
 	}
 
 	// 4. Java 特有的通配符导入
-	for _, imp := range fc.Imports {
-		if imp.IsWildcard {
-			basePath := strings.TrimSuffix(imp.RawImportPath, "*")
-			if defs, ok := gc.DefinitionsByQN[basePath+symbol]; ok {
-				return defs
+	for _, imps := range fc.Imports {
+		for _, imp := range imps {
+			if imp.IsWildcard {
+				basePath := strings.TrimSuffix(imp.RawImportPath, "*")
+				if defs, ok := gc.DefinitionsByQN[basePath+symbol]; ok {
+					return defs
+				}
 			}
 		}
 	}

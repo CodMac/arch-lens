@@ -1,14 +1,15 @@
 package main_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 
-	"github.com/CodMac/go-treesitter-dependency-analyzer/processor"
-
-	"github.com/CodMac/go-treesitter-dependency-analyzer/model"
-	_ "github.com/CodMac/go-treesitter-dependency-analyzer/x/java" // 确保注册了 Java 处理器
+	"github.com/CodMac/arch-lens"
+	"github.com/CodMac/arch-lens/core"
+	"github.com/CodMac/arch-lens/model"
+	_ "github.com/CodMac/arch-lens/x/java" // 确保注册了 Java 处理器
 )
 
 func TestFileProcessor_ProcessFiles(t *testing.T) {
@@ -35,7 +36,7 @@ func TestFileProcessor_ProcessFiles(t *testing.T) {
 	os.WriteFile(fileB, []byte(codeB), 0644)
 
 	// 2. 初始化 Processor
-	fp := processor.NewFileProcessor(model.LangJava, false, false, 2)
+	fp := main.NewFileProcessor(core.LangJava, false, false, 2, 0)
 
 	// 3. 执行分析
 	filePaths := []string{fileA, fileB}
@@ -44,12 +45,14 @@ func TestFileProcessor_ProcessFiles(t *testing.T) {
 		t.Fatalf("ProcessFiles failed: %v", err)
 	}
 
+	printRelations(rels)
+
 	// 4. 验证层级关系 (Stage 2 的产物)
 	t.Run("VerifyHierarchy", func(t *testing.T) {
 		hasPackage := false
 		hasFileInPkg := false
 		for _, rel := range rels {
-			if rel.Type == "CONTAINS" {
+			if rel.Type == model.Contain {
 				if rel.Source.Kind == model.Package && rel.Source.QualifiedName == "com.test" {
 					hasPackage = true
 				}
@@ -95,4 +98,19 @@ func TestFileProcessor_ProcessFiles(t *testing.T) {
 			t.Error("GlobalContext missing index for com.test.Base")
 		}
 	})
+}
+
+func printRelations(relations []*model.DependencyRelation) {
+	fmt.Printf("\n--- Found %d relations ---\n", len(relations))
+	for _, rel := range relations {
+		fmt.Printf("[%s] %s (%s) --> %s (%s)\n",
+			rel.Type,
+			rel.Source.QualifiedName, rel.Source.Kind,
+			rel.Target.QualifiedName, rel.Target.Kind)
+		if len(rel.Mores) > 0 {
+			for k, v := range rel.Mores {
+				fmt.Printf("    Mores[%v] -> %v\n", k, v)
+			}
+		}
+	}
 }

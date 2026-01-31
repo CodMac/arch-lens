@@ -6,13 +6,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/CodMac/go-treesitter-dependency-analyzer/context"
-	"github.com/CodMac/go-treesitter-dependency-analyzer/parser"
-	"github.com/CodMac/go-treesitter-dependency-analyzer/x/java"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	"github.com/CodMac/arch-lens/core"
+	"github.com/CodMac/arch-lens/model"
+	"github.com/CodMac/arch-lens/parser"
+	"github.com/CodMac/arch-lens/x/java"
 
-	"github.com/CodMac/go-treesitter-dependency-analyzer/model"
 	_ "github.com/tree-sitter/tree-sitter-go/bindings/go"
 )
 
@@ -23,7 +21,7 @@ func getTestFilePath(name string) string {
 
 // 将返回值类型改为接口 parser.Parser
 func getJavaParser(t *testing.T) parser.Parser {
-	javaParser, err := parser.NewParser(model.LangJava)
+	javaParser, err := parser.NewParser(core.LangJava)
 	if err != nil {
 		t.Fatalf("Failed to create Java parser: %v", err)
 	}
@@ -33,7 +31,7 @@ func getJavaParser(t *testing.T) parser.Parser {
 
 const printEle = true
 
-func printCodeElements(fCtx *context.FileContext) {
+func printCodeElements(fCtx *core.FileContext) {
 	if !printEle {
 		return
 	}
@@ -41,126 +39,18 @@ func printCodeElements(fCtx *context.FileContext) {
 	fmt.Printf("Package: %s\n", fCtx.PackageName)
 	for _, defs := range fCtx.DefinitionsBySN {
 		for _, def := range defs {
-			fmt.Printf("Short: %s  ->  Kind: %s,  QN: %s\n", def.Element.Name, def.Element.Kind, def.Element.QualifiedName)
+			fmt.Printf("Short: %s -> Kind: %s, QN: %s\n", def.Element.Name, def.Element.Kind, def.Element.QualifiedName)
+			fmt.Printf("      -> Extra: %v\n", def.Element.Extra.Mores)
 		}
 	}
 }
 
-// 验证注解定义、元注解提取
-// 验证语义化 Import
-// 验证注释提取
-func TestJavaCollector_LoggableAnnotation(t *testing.T) {
-	// 1. 获取测试文件路径 (对应 x/java/testdata/com/example/annotation/Loggable.java)
-	filePath := getTestFilePath(filepath.Join("com", "example", "annotation", "Loggable.java"))
-
-	// 2. 解析源码
-	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, true, true)
-	if err != nil {
-		t.Fatalf("Failed to parse file: %v", err)
-	}
-
-	// 3. 运行 Collector
-	collector := java.NewJavaCollector()
-	fCtx, err := collector.CollectDefinitions(rootNode, filePath, sourceBytes)
-	if err != nil {
-		t.Fatalf("CollectDefinitions failed: %v", err)
-	}
-	printCodeElements(fCtx)
-
-	// 4. 验证 Package Name
-	expectedPackage := "com.example.annotation"
-	if fCtx.PackageName != expectedPackage {
-		t.Errorf("Expected PackageName %q, got %q", expectedPackage, fCtx.PackageName)
-	}
-
-	// 5. 验证语义化 Import (修正重点：从 map[string]string 变为 ImportEntry)
-	t.Run("Verify Semantic Imports", func(t *testing.T) {
-		imp, ok := fCtx.Imports["*"]
-		if !ok {
-			t.Fatal("Expected wildcard import '*' not found")
-		}
-		if imp.RawImportPath != "java.lang.annotation.*" {
-			t.Errorf("Import path mismatch: expected java.lang.annotation.*, got %s", imp.RawImportPath)
-		}
-		if !imp.IsWildcard {
-			t.Error("Expected IsWildcard to be true")
-		}
-		if imp.Kind != model.Package {
-			t.Errorf("Expected Kind %s, got %s", model.Package, imp.Kind)
-		}
-	})
-
-	// 6. 验证注解定义与注释 (修正重点：增加 Doc 验证)
-	t.Run("Verify Annotation and Doc", func(t *testing.T) {
-		defs := fCtx.DefinitionsBySN["Loggable"]
-		if len(defs) == 0 {
-			t.Fatal("Annotation 'Loggable' not found")
-		}
-
-		elem := defs[0].Element
-		if elem.Kind != model.KAnnotation {
-			t.Errorf("Expected Kind %s, got %s", model.KAnnotation, elem.Kind)
-		}
-
-		// 验证 Doc 注释提取
-		if !strings.Contains(elem.Doc, "测试：Annotation Type Declaration") {
-			t.Errorf("Doc mismatch, got: %q", elem.Doc)
-		}
-
-		// 验证元注解提取
-		if elem.Extra == nil || len(elem.Extra.Annotations) == 0 {
-			t.Error("Extra.Annotations should not be empty")
-		}
-	})
-
-	// 7. 验证注解属性 (修正重点：现在应该能通过了)
-	t.Run("Verify Annotation Properties", func(t *testing.T) {
-		properties := []struct {
-			name string
-			ret  string
-			sign string
-		}{
-			{"level", "String", "String level()"},
-			{"trace", "boolean", "boolean trace()"},
-		}
-
-		for _, prop := range properties {
-			defs := fCtx.DefinitionsBySN[prop.name]
-			if len(defs) == 0 {
-				t.Errorf("Annotation property %q not found. Check if node type 'annotation_type_element_declaration' is handled.", prop.name)
-				continue
-			}
-
-			elem := defs[0].Element
-			if elem.Kind != model.Method {
-				t.Errorf("Property %q: expected Kind METHOD, got %s", prop.name, elem.Kind)
-			}
-
-			// 验证返回类型 (存在于 Extra 和 Signature 中)
-			if elem.Extra == nil || elem.Extra.MethodExtra.ReturnType != prop.ret {
-				t.Errorf("Property %q: expected return type %q, got %v", prop.name, prop.ret, elem.Extra.MethodExtra.ReturnType)
-			}
-
-			// 验证细化后的 Signature
-			if !strings.Contains(elem.Signature, prop.sign) {
-				t.Errorf("Property %q: signature mismatch. Expected contains %q, got %q", prop.name, prop.sign, elem.Signature)
-			}
-		}
-	})
-
-	fmt.Println("Java Collector Loggable test completed successfully.")
-}
-
-// 验证包名与导入
-// 验证顶级类定义
-// 验证字段与方法
-// 验证嵌套内部类 (最关键的 QN 逻辑)
 func TestJavaCollector_AbstractBaseEntity(t *testing.T) {
 	// 1. 获取测试文件路径
-	filePath := getTestFilePath(filepath.Join("com", "example", "model", "AbstractBaseEntity.java"))
+	filePath := getTestFilePath(filepath.Join("com", "example", "base", "AbstractBaseEntity.java"))
 
 	// 2. 解析源码
-	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, true, true)
+	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, false, true)
 	if err != nil {
 		t.Fatalf("Failed to parse file: %v", err)
 	}
@@ -171,1179 +61,2168 @@ func TestJavaCollector_AbstractBaseEntity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CollectDefinitions failed: %v", err)
 	}
+
 	printCodeElements(fCtx)
 
-	// 4. 验证包名与导入
-	assert.Equal(t, "com.example.model", fCtx.PackageName)
-	assert.Contains(t, fCtx.Imports, "Serializable")
-	assert.Contains(t, fCtx.Imports, "Date")
-
-	// 5. 验证顶级类定义
-	t.Run("Verify Top Level Class", func(t *testing.T) {
-		defs := fCtx.DefinitionsBySN["AbstractBaseEntity"]
-		require.NotEmpty(t, defs)
-
-		elem := defs[0].Element
-		assert.Equal(t, model.Class, elem.Kind)
-		assert.Equal(t, "com.example.model.AbstractBaseEntity", elem.QualifiedName)
-
-		// 验证 ClassExtra (继承与实现)
-		require.NotNil(t, elem.Extra.ClassExtra)
-		// 注意：Java AST 可能会保留泛型符号 <ID>，根据你目前的 getNodeContent 逻辑判断
-		assert.Contains(t, elem.Extra.ClassExtra.ImplementedInterfaces, "Serializable")
-		assert.Contains(t, elem.Extra.Modifiers, "public")
-		assert.Contains(t, elem.Extra.Modifiers, "abstract")
-	})
-
-	// 6. 验证字段与方法
-	t.Run("Verify Members", func(t *testing.T) {
-		// 验证字段 id
-		idDefs := fCtx.DefinitionsBySN["id"]
-		require.NotEmpty(t, idDefs)
-		assert.Equal(t, "com.example.model.AbstractBaseEntity.id", idDefs[0].Element.QualifiedName)
-		assert.Equal(t, "ID", idDefs[0].Element.Extra.FieldExtra.Type)
-
-		// 验证方法 getId
-		getDefs := fCtx.DefinitionsBySN["getId"]
-		require.NotEmpty(t, getDefs)
-		assert.Equal(t, "com.example.model.AbstractBaseEntity.getId()", getDefs[0].Element.QualifiedName)
-		assert.Equal(t, "ID", getDefs[0].Element.Extra.MethodExtra.ReturnType)
-	})
-
-	// 7. 验证嵌套内部类 (最关键的 QN 逻辑)
-	t.Run("Verify Nested Inner Class", func(t *testing.T) {
-		// 验证内部类 EntityMeta
-		metaDefs := fCtx.DefinitionsBySN["EntityMeta"]
-		require.NotEmpty(t, metaDefs)
-
-		metaElem := metaDefs[0].Element
-		assert.Equal(t, model.Class, metaElem.Kind)
-		// 验证 QN 是否正确拼接了父类名
-		expectedMetaQN := "com.example.model.AbstractBaseEntity.EntityMeta"
-		assert.Equal(t, expectedMetaQN, metaElem.QualifiedName)
-
-		// 验证内部类的成员
-		tableDefs := fCtx.DefinitionsBySN["tableName"]
-		require.NotEmpty(t, tableDefs)
-		assert.Equal(t, expectedMetaQN+".tableName", tableDefs[0].Element.QualifiedName)
-		assert.Equal(t, "String", tableDefs[0].Element.Extra.FieldExtra.Type)
-	})
-
-	// 8. 验证 Doc 采集
-	t.Run("Verify Class Doc", func(t *testing.T) {
-		defs := fCtx.DefinitionsBySN["AbstractBaseEntity"]
-		if len(defs) > 0 {
-			assert.Contains(t, defs[0].Element.Doc, "基础实体类")
-		}
-	})
-}
-
-// 验证接口继承
-// 验证函数全路径名称
-// 验证方法异常抛出
-// 验证默认方法与修饰符
-func TestJavaCollector_DataProcessor_Complex(t *testing.T) {
-	// 1. 初始化 (保持不变)
-	filePath := getTestFilePath(filepath.Join("com", "example", "core", "DataProcessor.java"))
-	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, true, false)
-	require.NoError(t, err)
-
-	collector := java.NewJavaCollector()
-	fCtx, err := collector.CollectDefinitions(rootNode, filePath, sourceBytes)
-	require.NoError(t, err)
-	printCodeElements(fCtx)
-
-	const interfaceQN = "com.example.core.DataProcessor"
-
-	// 2. 验证接口继承 (保持不变并补充 QN 校验)
-	t.Run("Verify Multiple Interface Inheritance", func(t *testing.T) {
-		defs := fCtx.DefinitionsBySN["DataProcessor"]
-		require.NotEmpty(t, defs)
-
-		elem := defs[0].Element
-		assert.Equal(t, interfaceQN, elem.QualifiedName) // 校验接口 QN
-
-		ce := elem.Extra.ClassExtra
-		require.NotNil(t, ce)
-		assert.Contains(t, ce.ImplementedInterfaces, "Runnable")
-		assert.Contains(t, ce.ImplementedInterfaces, "AutoCloseable")
-		assert.Contains(t, elem.Doc, "Method Throws")
-	})
-
-	// 3. 验证函数全路径名称 (核心补充：processAll)
-	t.Run("Verify Method Full Qualified Names", func(t *testing.T) {
-		defs := fCtx.DefinitionsBySN["processAll"]
-		require.NotEmpty(t, defs)
-
-		elem := defs[0].Element
-		me := elem.Extra.MethodExtra
-		require.NotNil(t, me)
-
-		// 验证 QualifiedName: 包含类型，不包含参数名，擦除泛型 (如果有)
-		// 期望: 包名.类名.方法名(参数类型)
-		expectedQN := interfaceQN + ".processAll(String)"
-		assert.Equal(t, expectedQN, elem.QualifiedName)
-
-		// 验证 IncludeParamNameQN: 包含参数类型和参数名
-		// 期望: 包名.类名.方法名(参数类型 参数名)
-		expectedFullQN := interfaceQN + ".processAll(String batchId)"
-		assert.Equal(t, expectedFullQN, me.IncludeParamNameQN)
-
-		// 额外验证返回类型
-		assert.Equal(t, "List<T>", me.ReturnType)
-	})
-
-	// 4. 验证默认方法全路径 (stop)
-	t.Run("Verify Default Method QN", func(t *testing.T) {
-		defs := fCtx.DefinitionsBySN["stop"]
-		require.NotEmpty(t, defs)
-
-		elem := defs[0].Element
-		me := elem.Extra.MethodExtra
-		require.NotNil(t, me)
-
-		// 无参方法 QN
-		assert.Equal(t, interfaceQN+".stop()", elem.QualifiedName)
-		// 无参方法 IncludeParamNameQN 与 QN 一致
-		assert.Equal(t, interfaceQN+".stop()", me.IncludeParamNameQN)
-
-		assert.Contains(t, elem.Extra.Modifiers, "default")
-	})
-
-	// 5. 验证导入表 (保持不变)
-	t.Run("Verify Imports", func(t *testing.T) {
-		assert.Contains(t, fCtx.Imports, "AbstractBaseEntity")
-		assert.Equal(t, "com.example.model.AbstractBaseEntity", fCtx.Imports["AbstractBaseEntity"].RawImportPath)
-	})
-}
-
-// 验证类级别的元数据 (泛型继承与注解)
-// 验证构造函数 (Constructor)
-// 验证复杂方法签名与异常
-// 验证字段采集
-func TestJavaCollector_UserServiceImpl(t *testing.T) {
-	// 1. 获取测试文件路径
-	filePath := getTestFilePath(filepath.Join("com", "example", "service", "UserServiceImpl.java"))
-
-	// 2. 解析源码
-	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, true, true)
-	require.NoError(t, err)
-
-	// 3. 运行 Collector
-	collector := java.NewJavaCollector()
-	fCtx, err := collector.CollectDefinitions(rootNode, filePath, sourceBytes)
-	require.NoError(t, err)
-	printCodeElements(fCtx)
-
-	// 4. 验证类级别的元数据 (泛型继承与注解)
-	t.Run("Verify Class Metadata", func(t *testing.T) {
-		defs := fCtx.DefinitionsBySN["UserServiceImpl"]
-		require.NotEmpty(t, defs)
-		elem := defs[0].Element
-
-		assert.Equal(t, "com.example.service.UserServiceImpl", elem.QualifiedName)
-
-		// 验证注解采集
-		assert.Contains(t, elem.Extra.Annotations, "@Loggable")
-
-		// 验证继承 (含泛型)
-		ce := elem.Extra.ClassExtra
-		require.NotNil(t, ce)
-		assert.Equal(t, "AbstractBaseEntity<String>", ce.SuperClass)
-
-		// 验证接口实现 (DataProcessor 同样带泛型)
-		assert.Contains(t, ce.ImplementedInterfaces, "DataProcessor<AbstractBaseEntity<String>>")
-	})
-
-	// 5. 验证构造函数 (Constructor)
-	t.Run("Verify Constructor", func(t *testing.T) {
-		// SN 应该匹配类名 UserServiceImpl
-		defs := fCtx.DefinitionsBySN["UserServiceImpl"]
-		var constructor *model.CodeElement
-		for _, d := range defs {
-			if d.Element.Extra.MethodExtra != nil && d.Element.Extra.MethodExtra.IsConstructor {
-				constructor = d.Element
-				break
-			}
-		}
-		require.NotNil(t, constructor, "Constructor not found")
-		assert.True(t, constructor.Extra.MethodExtra.IsConstructor)
-		assert.Equal(t, "public UserServiceImpl()", constructor.Signature)
-	})
-
-	// 6. 验证复杂方法签名与异常
-	t.Run("Verify Complex Method", func(t *testing.T) {
-		defs := fCtx.DefinitionsBySN["processAll"]
-		require.NotEmpty(t, defs)
-		elem := defs[0].Element
-
-		assert.Equal(t, "List<AbstractBaseEntity<String>>", elem.Extra.MethodExtra.ReturnType)
-		assert.Contains(t, elem.Extra.MethodExtra.ThrowsTypes, "RuntimeException")
-
-		// 验证 @Override 是否被正确采集为修饰符或注解
-		assert.Condition(t, func() bool {
-			return contains(elem.Extra.Annotations, "@Override")
-		}, "Should contain @Override")
-	})
-
-	// 7. 验证字段采集
-	t.Run("Verify Private Field", func(t *testing.T) {
-		defs := fCtx.DefinitionsBySN["cache"]
-		require.NotEmpty(t, defs)
-		fe := defs[0].Element.Extra.FieldExtra
-
-		assert.Equal(t, "List<String>", fe.Type)
-		assert.Contains(t, defs[0].Element.Extra.Modifiers, "final")
-	})
-}
-
-// 验证 Enum 定义
-// 验证 Enum Constants (枚举常量)
-// 验证内部字段 (Fields)
-// 验证构造函数 (Enum Constructor)
-func TestJavaCollector_ErrorCode(t *testing.T) {
-	// 1. 获取测试文件路径
-	filePath := getTestFilePath(filepath.Join("com", "example", "model", "ErrorCode.java"))
-
-	// 2. 解析源码
-	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, true, false)
-	require.NoError(t, err)
-
-	// 3. 运行 Collector
-	collector := java.NewJavaCollector()
-	fCtx, err := collector.CollectDefinitions(rootNode, filePath, sourceBytes)
-	require.NoError(t, err)
-	printCodeElements(fCtx)
-
-	// 4. 验证 Enum 定义
-	t.Run("Verify Enum Definition", func(t *testing.T) {
-		defs := fCtx.DefinitionsBySN["ErrorCode"]
-		require.NotEmpty(t, defs)
-
-		elem := defs[0].Element
-		assert.Equal(t, model.Enum, elem.Kind)
-		assert.Equal(t, "com.example.model.ErrorCode", elem.QualifiedName)
-		assert.Contains(t, elem.Doc, "用于测试 ENUM 定义和使用")
-	})
-
-	// 5. 验证 Enum Constants (枚举常量)
-	t.Run("Verify Enum Constants", func(t *testing.T) {
-		constants := []string{"USER_NOT_FOUND", "NAME_EMPTY"}
-		for _, name := range constants {
-			defs := fCtx.DefinitionsBySN[name]
-			require.NotEmpty(t, defs, "Enum constant %s not found", name)
-
-			elem := defs[0].Element
-			assert.Equal(t, model.EnumConstant, elem.Kind)
-			assert.Equal(t, "com.example.model.ErrorCode."+name, elem.QualifiedName)
-		}
-	})
-
-	// 6. 验证内部字段 (Fields)
-	t.Run("Verify Internal Fields", func(t *testing.T) {
-		fields := []struct {
-			name string
-			typ  string
-		}{
-			{"code", "int"},
-			{"message", "String"},
-		}
-
-		for _, f := range fields {
-			defs := fCtx.DefinitionsBySN[f.name]
-			require.NotEmpty(t, defs)
-
-			elem := defs[0].Element
-			assert.Equal(t, model.Field, elem.Kind)
-			assert.Equal(t, f.typ, elem.Extra.FieldExtra.Type)
-			assert.Contains(t, elem.Extra.Modifiers, "private")
-			assert.Contains(t, elem.Extra.Modifiers, "final")
-		}
-	})
-
-	// 7. 验证构造函数 (Enum Constructor)
-	t.Run("Verify Enum Constructor", func(t *testing.T) {
-		// 枚举构造函数的 SN 应该是枚举类名 ErrorCode
-		defs := fCtx.DefinitionsBySN["ErrorCode"]
-		var constructor *model.CodeElement
-		for _, d := range defs {
-			if d.Element.Kind == model.Method && d.Element.Extra.MethodExtra != nil && d.Element.Extra.MethodExtra.IsConstructor {
-				constructor = d.Element
-				break
-			}
-		}
-		require.NotNil(t, constructor, "Enum constructor not found")
-		// 注意：Java 枚举构造函数默认是 private 的，即便不写
-		assert.True(t, constructor.Extra.MethodExtra.IsConstructor)
-		assert.Equal(t, 2, len(constructor.Extra.MethodExtra.Parameters))
-	})
-
-	// 8. 验证普通方法 (Methods)
-	t.Run("Verify Methods", func(t *testing.T) {
-		methods := []string{"getCode", "getMessage"}
-		for _, name := range methods {
-			defs := fCtx.DefinitionsBySN[name]
-			require.NotEmpty(t, defs)
-
-			elem := defs[0].Element
-			assert.Equal(t, model.Method, elem.Kind)
-			assert.Contains(t, elem.Extra.Modifiers, "public")
-			assert.Equal(t, "com.example.model.ErrorCode."+name+"()", elem.QualifiedName)
-		}
-	})
-
-	// 9. 验证枚举常量的内部参数提取 (New!)
-	t.Run("Verify Enum Constant Arguments", func(t *testing.T) {
-		testCases := []struct {
-			name         string
-			expectedArgs []string
-		}{
-			{"USER_NOT_FOUND", []string{"404", "\"User not found in repository\""}},
-			{"NAME_EMPTY", []string{"400", "\"User name cannot be empty\""}},
-		}
-
-		for _, tc := range testCases {
-			defs := fCtx.DefinitionsBySN[tc.name]
-			require.NotEmpty(t, defs)
-
-			elem := defs[0].Element
-			require.NotNil(t, elem.Extra.EnumConstantExtra, "EnumConstantExtra should not be nil for %s", tc.name)
-
-			// 验证参数内容
-			assert.Equal(t, tc.expectedArgs, elem.Extra.EnumConstantExtra.Arguments)
-		}
-	})
-}
-
-// 验证类定义与继承关系
-// 验证字段
-// 验证构造函数重载
-func TestJavaCollector_NotificationException(t *testing.T) {
-	// 1. 获取测试文件路径
-	filePath := getTestFilePath(filepath.Join("com", "example", "model", "NotificationException.java"))
-
-	// 2. 解析源码
-	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, true, true)
-	if err != nil {
-		t.Fatalf("Failed to parse file: %v", err)
-	}
-
-	// 3. 运行 Collector
-	collector := java.NewJavaCollector()
-	fCtx, err := collector.CollectDefinitions(rootNode, filePath, sourceBytes)
-	if err != nil {
-		t.Fatalf("CollectDefinitions failed: %v", err)
-	}
-	printCodeElements(fCtx)
-
-	// 4. 验证 Package Name
-	expectedPackage := "com.example.model"
+	// 断言 1: 包名验证
+	expectedPackage := "com.example.base"
 	if fCtx.PackageName != expectedPackage {
 		t.Errorf("Expected PackageName %q, got %q", expectedPackage, fCtx.PackageName)
 	}
 
-	// 5. 验证类定义与继承关系 (EXTEND 关系)
-	className := "NotificationException"
-	classQN := "com.example.model.NotificationException"
-	t.Run("Verify Class and Inheritance", func(t *testing.T) {
-		defs := fCtx.DefinitionsBySN[className]
+	// 断言 2: Imports 数量及内容验证
+	t.Run("Verify Imports", func(t *testing.T) {
+		expectedImports := []string{"java.io.Serializable", "java.util.Date"}
+		if len(fCtx.Imports) != len(expectedImports) {
+			t.Errorf("Expected %d imports, got %d", len(expectedImports), len(fCtx.Imports))
+		}
+
+		for _, path := range expectedImports {
+			parts := strings.Split(path, ".")
+			alias := parts[len(parts)-1]
+			if imps, ok := fCtx.Imports[alias]; !ok || imps[0].RawImportPath != path {
+				t.Errorf("Missing or incorrect import for %s", path)
+			}
+		}
+	})
+
+	// 断言 3: 类定义、QN、Kind、Abstract 属性、签名验证
+	t.Run("Verify AbstractBaseEntity Class", func(t *testing.T) {
+		qn := "com.example.base.AbstractBaseEntity"
+		defs := findDefinitionsByQN(fCtx, qn)
 		if len(defs) == 0 {
-			t.Fatalf("Class %q not found", className)
+			t.Fatalf("Definition not found for QN: %s", qn)
 		}
 
 		elem := defs[0].Element
 		if elem.Kind != model.Class {
 			t.Errorf("Expected Kind CLASS, got %s", elem.Kind)
 		}
-		assert.Equal(t, classQN, elem.QualifiedName)
 
-		// 验证父类提取 (extends Exception)
-		if elem.Extra == nil || elem.Extra.ClassExtra == nil {
-			t.Fatal("Extra.ClassExtra is nil")
-		}
-		if elem.Extra.ClassExtra.SuperClass != "Exception" {
-			t.Errorf("Expected SuperClass 'Exception', got %q", elem.Extra.ClassExtra.SuperClass)
+		if isAbs, ok := elem.Extra.Mores[java.ClassIsAbstract].(bool); !ok || !isAbs {
+			t.Error("Expected java.class.is_abstract to be true")
 		}
 
-		// 验证 Doc
-		if !strings.Contains(elem.Doc, "用于测试 EXTEND 和 THROW 关系") {
-			t.Errorf("Doc mismatch, got: %q", elem.Doc)
+		// 验证签名 (注意：由于 JavaCollector 内部实现可能不同，这里匹配核心部分)
+		expectedSign := "public abstract class AbstractBaseEntity<ID> implements Serializable"
+		if expectedSign != elem.Signature {
+			t.Errorf("Signature mismatch. Got: %q, Expected: %s", elem.Signature, expectedSign)
 		}
 	})
 
-	// 6. 验证字段 (CONTAIN 关系)
-	t.Run("Verify Fields", func(t *testing.T) {
-		fieldName := "serialVersionUID"
-		defs := fCtx.DefinitionsBySN[fieldName]
+	// 断言 4: 字段 id 验证
+	t.Run("Verify Field id", func(t *testing.T) {
+		qn := "com.example.base.AbstractBaseEntity.id"
+		defs := findDefinitionsByQN(fCtx, qn)
 		if len(defs) == 0 {
-			t.Fatalf("Field %q not found", fieldName)
+			t.Fatalf("Field id not found")
 		}
 
 		elem := defs[0].Element
-		// 验证修饰符: private static final
-		modifiers := elem.Extra.Modifiers
-		expectedMods := []string{"private", "static", "final"}
-		for _, mod := range expectedMods {
+		if elem.Kind != model.Field {
+			t.Errorf("Expected Field, got %s", elem.Kind)
+		}
+
+		if tpe := elem.Extra.Mores[java.FieldType]; tpe != "ID" {
+			t.Errorf("Expected type ID, got %v", tpe)
+		}
+
+		if !contains(elem.Extra.Modifiers, "protected") {
+			t.Error("Modifiers should contain 'protected'")
+		}
+	})
+
+	// 断言 5: 字段 createdAt 验证
+	t.Run("Verify Field createdAt", func(t *testing.T) {
+		qn := "com.example.base.AbstractBaseEntity.createdAt"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("Field createdAt not found")
+		}
+
+		elem := defs[0].Element
+		if tpe := elem.Extra.Mores[java.FieldType]; tpe != "Date" {
+			t.Errorf("Expected type Date, got %v", tpe)
+		}
+
+		if !contains(elem.Extra.Modifiers, "private") {
+			t.Error("Modifiers should contain 'private'")
+		}
+	})
+
+	// 断言 6 & 7: 方法 getId 和 setId 验证
+	t.Run("Verify Methods", func(t *testing.T) {
+		// getId()
+		getIdQN := "com.example.base.AbstractBaseEntity.getId()"
+		getDefs := findDefinitionsByQN(fCtx, getIdQN)
+		if len(getDefs) == 0 {
+			t.Fatalf("Method getId() not found")
+		}
+
+		getElem := getDefs[0].Element
+		if ret := getElem.Extra.Mores[java.MethodReturnType]; ret != "ID" {
+			t.Errorf("getId expected return ID, got %v", ret)
+		}
+
+		// setId(ID id) - 验证 QN 括号内为类型
+		setIdQN := "com.example.base.AbstractBaseEntity.setId(ID)"
+		setDefs := findDefinitionsByQN(fCtx, setIdQN)
+		if len(setDefs) == 0 {
+			t.Fatalf("Method setId(ID) not found")
+		}
+
+		setElem := setDefs[0].Element
+		if ret := setElem.Extra.Mores[java.MethodReturnType]; ret != "void" {
+			t.Errorf("setId expected return void, got %v", ret)
+		}
+	})
+
+	// 断言 8 & 9: 内部类 EntityMeta 及字段 tableName
+	t.Run("Verify Nested Class EntityMeta", func(t *testing.T) {
+		classQN := "com.example.base.AbstractBaseEntity.EntityMeta"
+		classDefs := findDefinitionsByQN(fCtx, classQN)
+		if len(classDefs) == 0 {
+			t.Fatalf("Nested class EntityMeta not found")
+		}
+
+		classElem := classDefs[0].Element
+		if !contains(classElem.Extra.Modifiers, "static") {
+			t.Error("Should be static")
+		}
+
+		// 验证内部字段 tableName 的递归 QN
+		fieldQN := "com.example.base.AbstractBaseEntity.EntityMeta.tableName"
+		fieldDefs := findDefinitionsByQN(fCtx, fieldQN)
+		if len(fieldDefs) == 0 {
+			t.Fatalf("Field tableName not found in nested class")
+		}
+
+		fieldElem := fieldDefs[0].Element
+		if tpe := fieldElem.Extra.Mores[java.FieldType]; tpe != "String" {
+			t.Errorf("tableName expected String, got %v", tpe)
+		}
+	})
+}
+
+func TestJavaCollector_BaseClassHierarchy(t *testing.T) {
+	// 1. 获取测试文件路径
+	filePath := getTestFilePath(filepath.Join("com", "example", "base", "BaseClass.java"))
+
+	// 2. 解析与收集
+	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, false, true)
+	if err != nil {
+		t.Fatalf("Failed to parse file: %v", err)
+	}
+
+	collector := java.NewJavaCollector()
+	fCtx, err := collector.CollectDefinitions(rootNode, filePath, sourceBytes)
+	if err != nil {
+		t.Fatalf("CollectDefinitions failed: %v", err)
+	}
+
+	printCodeElements(fCtx)
+
+	// 断言 1 & 2: 验证 BaseClass (Abstract, Annotations, Interfaces)
+	t.Run("Verify BaseClass Metadata", func(t *testing.T) {
+		qn := "com.example.base.BaseClass"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("BaseClass not found")
+		}
+		elem := defs[0].Element
+
+		// 断言 1: 注解验证
+		expectedAnnos := []string{"@Deprecated", "@SuppressWarnings(\"unused\")"}
+		for _, anno := range expectedAnnos {
+			if !contains(elem.Extra.Annotations, anno) {
+				t.Errorf("BaseClass missing annotation: %s", anno)
+			}
+		}
+
+		// 断言 2: Abstract 属性与接口
+		if isAbs, ok := elem.Extra.Mores[java.ClassIsAbstract].(bool); !ok || !isAbs {
+			t.Error("Expected java.class.is_abstract to be true")
+		}
+
+		interfaces, ok := elem.Extra.Mores[java.ClassImplementedInterfaces].([]string)
+		if !ok || !contains(interfaces, "Serializable") {
+			t.Errorf("Expected Serializable interface, got %v", elem.Extra.Mores[java.ClassImplementedInterfaces])
+		}
+	})
+
+	// 断言 3 & 4: 验证 FinalClass (Final, SuperClass, Multiple Interfaces, Location)
+	t.Run("Verify FinalClass Metadata", func(t *testing.T) {
+		qn := "com.example.base.FinalClass"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("FinalClass not found")
+		}
+		elem := defs[0].Element
+
+		// 断言 4: Kind 验证
+		if elem.Kind != model.Class {
+			t.Errorf("Expected Kind CLASS, got %s", elem.Kind)
+		}
+
+		// 断言 4: 位置信息验证 (FinalClass 在 BaseClass 之后，大致在第 11 行左右)
+		if elem.Location.StartLine < 5 {
+			t.Errorf("FinalClass StartLine seems incorrect: %d", elem.Location.StartLine)
+		}
+
+		// 断言 3: Final 属性
+		if isFinal, ok := elem.Extra.Mores[java.ClassIsFinal].(bool); !ok || !isFinal {
+			t.Error("Expected java.class.is_final to be true")
+		}
+
+		// 断言 3: 父类验证
+		super, _ := elem.Extra.Mores[java.ClassSuperClass].(string)
+		if !strings.Contains(super, "BaseClass") {
+			t.Errorf("Expected super class BaseClass, got %q", super)
+		}
+
+		// 断言 3: 多接口验证
+		interfaces, _ := elem.Extra.Mores[java.ClassImplementedInterfaces].([]string)
+		if len(interfaces) < 2 || !contains(interfaces, "Cloneable") || !contains(interfaces, "Runnable") {
+			t.Errorf("Expected multiple interfaces (Cloneable, Runnable), got %v", interfaces)
+		}
+	})
+
+	// 断言 5: 验证 FinalClass.run() 函数的注解
+	t.Run("Verify FinalClass.run() Annotations", func(t *testing.T) {
+		qn := "com.example.base.FinalClass.run()"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("Method run() not found")
+		}
+		elem := defs[0].Element
+
+		if !contains(elem.Extra.Annotations, "@Override") {
+			t.Error("Method run() missing @Override annotation")
+		}
+	})
+}
+
+func TestJavaCollector_CallbackManager(t *testing.T) {
+	// 1. 获取测试文件路径
+	filePath := getTestFilePath(filepath.Join("com", "example", "base", "CallbackManager.java"))
+
+	// 2. 解析源码与运行 Collector
+	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, false, true)
+	if err != nil {
+		t.Fatalf("Failed to parse file: %v", err)
+	}
+
+	collector := java.NewJavaCollector()
+	fCtx, err := collector.CollectDefinitions(rootNode, filePath, sourceBytes)
+	if err != nil {
+		t.Fatalf("CollectDefinitions failed: %v", err)
+	}
+
+	printCodeElements(fCtx)
+
+	// 验证 1: 验证方法内部定义的局部类 LocalValidator
+	t.Run("Verify Local Class", func(t *testing.T) {
+		// 根据你的 Collector 实现，局部类应该在方法 QN 下
+		qn := "com.example.base.CallbackManager.register().LocalValidator"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("Local class LocalValidator not found at %s", qn)
+		}
+
+		elem := defs[0].Element
+		if elem.Kind != model.Class {
+			t.Errorf("Expected Kind CLASS, got %s", elem.Kind)
+		}
+
+		// 验证局部类内部的方法
+		methodQN := qn + ".isValid()"
+		methodDefs := findDefinitionsByQN(fCtx, methodQN)
+		if len(methodDefs) == 0 {
+			t.Errorf("Method isValid() not found in local class")
+		}
+		if methodDefs[0].Element.Extra.Mores[java.MethodParameters] != nil {
+			t.Errorf("Method isValid() found params")
+		}
+	})
+
+	// 验证 2: 验证变量 r
+	t.Run("Verify Variable r", func(t *testing.T) {
+		qn := "com.example.base.CallbackManager.register().r"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("Variable r not found at %s", qn)
+		}
+
+		elem := defs[0].Element
+		if tpe := elem.Extra.Mores[java.VariableType]; tpe != "Runnable" {
+			t.Errorf("Expected type Runnable, got %v", tpe)
+		}
+	})
+
+	// 验证 3: 验证匿名内部类及其方法 run()
+	t.Run("Verify Anonymous Inner Class and Run Method", func(t *testing.T) {
+		// 修正路径：anonymousClass$1 现在应该正确嵌套了 run()
+		anonQN := "com.example.base.CallbackManager.register().anonymousClass$1"
+		runQN := anonQN + ".run()"
+
+		runDefs := findDefinitionsByQN(fCtx, runQN)
+		if len(runDefs) == 0 {
+			t.Fatalf("Method run() not found at expected QN: %s", runQN)
+		}
+
+		elem := runDefs[0].Element
+		if !contains(elem.Extra.Annotations, "@Override") {
+			t.Error("Method run() missing @Override")
+		}
+	})
+}
+
+func TestJavaCollector_ConfigService(t *testing.T) {
+	// 1. 获取测试文件路径
+	filePath := getTestFilePath(filepath.Join("com", "example", "base", "ConfigService.java"))
+
+	// 2. 解析源码与运行 Collector
+	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, false, false)
+	if err != nil {
+		t.Fatalf("Failed to parse file: %v", err)
+	}
+
+	collector := java.NewJavaCollector()
+	fCtx, err := collector.CollectDefinitions(rootNode, filePath, sourceBytes)
+	if err != nil {
+		t.Fatalf("CollectDefinitions failed: %v", err)
+	}
+
+	printCodeElements(fCtx)
+
+	// 验证 1: 变长参数 (Object...) 与 数组参数 (String[])
+	t.Run("Verify Variadic and Array Parameters", func(t *testing.T) {
+		// 注意：QN 内部的参数类型应反映原始定义
+		qn := "com.example.base.ConfigService.updateConfigs(String[],Object...)"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("Method updateConfigs not found with expected signature QN: %s", qn)
+		}
+
+		elem := defs[0].Element
+		params, ok := elem.Extra.Mores[java.MethodParameters].([]string)
+		if !ok || len(params) != 2 {
+			t.Fatalf("Expected 2 parameters, got %v", params)
+		}
+
+		// 验证数组参数
+		if !strings.Contains(params[0], "String[]") {
+			t.Errorf("Expected first param to be String[], got %s", params[0])
+		}
+
+		// 验证变长参数
+		if !strings.Contains(params[1], "Object...") {
+			t.Errorf("Expected second param to be Object..., got %s", params[1])
+		}
+	})
+
+	// 验证 2: 复杂多属性注解
+	t.Run("Verify Complex Annotations", func(t *testing.T) {
+		qn := "com.example.base.ConfigService.legacyMethod()"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("Method legacyMethod not found")
+		}
+
+		elem := defs[0].Element
+		annos := elem.Extra.Annotations
+
+		// 验证 @SuppressWarnings 的数组格式
+		foundSuppressed := false
+		for _, a := range annos {
+			if strings.Contains(a, "@SuppressWarnings") && strings.Contains(a, "\"unchecked\"") && strings.Contains(a, "\"rawtypes\"") {
+				foundSuppressed = true
+				break
+			}
+		}
+		if !foundSuppressed {
+			t.Errorf("Could not find complete @SuppressWarnings annotation, got: %v", annos)
+		}
+
+		// 验证 @Deprecated 的多属性 (since, forRemoval)
+		foundDeprecated := false
+		for _, a := range annos {
+			if strings.Contains(a, "@Deprecated") && strings.Contains(a, "since = \"1.2\"") && strings.Contains(a, "forRemoval = true") {
+				foundDeprecated = true
+				break
+			}
+		}
+		if !foundDeprecated {
+			t.Errorf("Could not find detailed @Deprecated annotation, got: %v", annos)
+		}
+	})
+
+	t.Run("Verify Specific Parameters", func(t *testing.T) {
+		// 验证 keys
+		keysQN := "com.example.base.ConfigService.updateConfigs(String[],Object...).keys"
+		if len(findDefinitionsByQN(fCtx, keysQN)) == 0 {
+			t.Errorf("Variable 'keys' not found")
+		}
+
+		// 验证 values
+		valuesQN := "com.example.base.ConfigService.updateConfigs(String[],Object...).values"
+		vDefs := findDefinitionsByQN(fCtx, valuesQN)
+		if len(vDefs) == 0 {
+			t.Fatalf("Variable 'values' not found")
+		}
+
+		vElem := vDefs[0].Element
+		if tpe := vElem.Extra.Mores[java.VariableType]; tpe != "Object..." {
+			t.Errorf("Expected type Object..., got %v", tpe)
+		}
+	})
+}
+
+func TestJavaCollector_DataProcessor(t *testing.T) {
+	// 1. 获取测试文件路径
+	filePath := getTestFilePath(filepath.Join("com", "example", "base", "DataProcessor.java"))
+
+	// 2. 解析源码与运行 Collector
+	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, false, false)
+	if err != nil {
+		t.Fatalf("Failed to parse file: %v", err)
+	}
+
+	collector := java.NewJavaCollector()
+	fCtx, err := collector.CollectDefinitions(rootNode, filePath, sourceBytes)
+	if err != nil {
+		t.Fatalf("CollectDefinitions failed: %v", err)
+	}
+
+	printCodeElements(fCtx)
+
+	// 验证 1: 接口定义、多继承与泛型
+	t.Run("Verify Interface Heritage and Generics", func(t *testing.T) {
+		qn := "com.example.base.DataProcessor"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("Interface DataProcessor not found")
+		}
+
+		elem := defs[0].Element
+		// 验证接口继承
+		ifaces, _ := elem.Extra.Mores[java.InterfaceImplementedInterfaces].([]string)
+		expectedIfaces := []string{"Runnable", "AutoCloseable"}
+		for _, expected := range expectedIfaces {
+			if !contains(ifaces, expected) {
+				t.Errorf("Expected interface %s not found in %v", expected, ifaces)
+			}
+		}
+
+		// 验证签名中的泛型参数 (T extends AbstractBaseEntity<?>)
+		if !strings.Contains(elem.Signature, "<T extends AbstractBaseEntity<?>>") {
+			t.Errorf("Signature missing generics: %s", elem.Signature)
+		}
+	})
+
+	// 验证 2: 方法的 Throws 异常
+	t.Run("Verify Method Throws", func(t *testing.T) {
+		// 注意：泛型 T 在 QN 中按原样提取
+		qn := "com.example.base.DataProcessor.processAll(String)"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("Method processAll not found")
+		}
+
+		elem := defs[0].Element
+		throws, _ := elem.Extra.Mores[java.MethodThrowsTypes].([]string)
+
+		expectedThrows := []string{"RuntimeException", "Exception"}
+		if len(throws) != 2 {
+			t.Fatalf("Expected 2 throws types, got %v", throws)
+		}
+		for i, e := range expectedThrows {
+			if throws[i] != e {
+				t.Errorf("Expected throw %s, got %s", e, throws[i])
+			}
+		}
+	})
+
+	// 验证 3: Java 8 Default 方法修饰符
+	t.Run("Verify Default Method", func(t *testing.T) {
+		qn := "com.example.base.DataProcessor.stop()"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("Method stop not found")
+		}
+
+		elem := defs[0].Element
+		// 验证是否包含 default 关键字
+		if !contains(elem.Extra.Modifiers, "default") {
+			t.Errorf("Method stop should have 'default' modifier, got %v", elem.Extra.Modifiers)
+		}
+
+		// 验证 Signature 是否正确包含 default
+		if !strings.HasPrefix(elem.Signature, "default void stop()") {
+			t.Errorf("Signature prefix incorrect: %s", elem.Signature)
+		}
+	})
+}
+
+func TestJavaCollector_NestedAndStaticBlocks(t *testing.T) {
+	filePath := getTestFilePath(filepath.Join("com", "example", "base", "OuterClass.java"))
+	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, false, true)
+	if err != nil {
+		t.Fatalf("Failed to parse file: %v", err)
+	}
+
+	collector := java.NewJavaCollector()
+	fCtx, err := collector.CollectDefinitions(rootNode, filePath, sourceBytes)
+	if err != nil {
+		t.Fatalf("CollectDefinitions failed: %v", err)
+	}
+
+	printCodeElements(fCtx)
+
+	// 验证 1: 静态初始化块与实例块
+	t.Run("Verify Initialization Blocks", func(t *testing.T) {
+		// 静态块通常被识别为 static_initializer 节点, 我们将其命名为 $static
+		staticBlockQN := "com.example.base.OuterClass.$static$1"
+		if len(findDefinitionsByQN(fCtx, staticBlockQN)) == 0 {
+			t.Errorf("Static initializer block not found at expected QN: %s", staticBlockQN)
+		}
+	})
+
+	// 验证 2: 内部类与静态嵌套类
+	t.Run("Verify Nested Classes", func(t *testing.T) {
+		// 内部类 QN
+		innerQN := "com.example.base.OuterClass.InnerClass"
+		if len(findDefinitionsByQN(fCtx, innerQN)) == 0 {
+			t.Errorf("InnerClass not found")
+		}
+
+		// 静态嵌套类方法 QN
+		nestedMethodQN := "com.example.base.OuterClass.StaticNestedClass.run()"
+		if len(findDefinitionsByQN(fCtx, nestedMethodQN)) == 0 {
+			t.Errorf("Method run() in StaticNestedClass not found")
+		}
+	})
+
+	// 验证 3: 方法内部类 (Local Class)
+	t.Run("Verify Local Class", func(t *testing.T) {
+		// 注意层级：OuterClass -> scopeTest() -> LocalClass
+		localClassQN := "com.example.base.OuterClass.scopeTest().LocalClass"
+		defs := findDefinitionsByQN(fCtx, localClassQN)
+		if len(defs) == 0 {
+			t.Errorf("Local class inside method not found at: %s", localClassQN)
+		}
+	})
+}
+
+func TestJavaCollector_Annotation(t *testing.T) {
+	// 1. 获取测试文件路径
+	filePath := getTestFilePath(filepath.Join("com", "example", "base", "annotation", "Loggable.java"))
+
+	// 2. 解析源码与运行 Collector
+	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, false, false)
+	if err != nil {
+		t.Fatalf("Failed to parse file: %v", err)
+	}
+
+	collector := java.NewJavaCollector()
+	fCtx, err := collector.CollectDefinitions(rootNode, filePath, sourceBytes)
+	if err != nil {
+		t.Fatalf("CollectDefinitions failed: %v", err)
+	}
+
+	printCodeElements(fCtx)
+
+	// 验证 1: Annotation Type Declaration & 注释提取
+	t.Run("Verify Annotation Declaration and Doc", func(t *testing.T) {
+		qn := "com.example.base.annotation.Loggable"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("Annotation Loggable not found with QN: %s", qn)
+		}
+
+		elem := defs[0].Element
+		// 验证注释提取 (Doc)
+		if !strings.Contains(elem.Doc, "Annotation Type Declaration") || !strings.Contains(elem.Doc, "Meta-Annotations") {
+			t.Errorf("Doc comment not correctly extracted, got: %s", elem.Doc)
+		}
+
+		// 验证元注解 (Meta-Annotations)
+		annos := elem.Extra.Annotations
+		hasRetention := false
+		hasTarget := false
+		for _, a := range annos {
+			if strings.Contains(a, "@Retention") {
+				hasRetention = true
+			}
+			if strings.Contains(a, "@Target") {
+				hasTarget = true
+			}
+		}
+		if !hasRetention || !hasTarget {
+			t.Errorf("Missing meta-annotations. Found: %v", annos)
+		}
+	})
+
+	// 验证 2: 语义化 Import ("*" 通配符)
+	t.Run("Verify Wildcard Import", func(t *testing.T) {
+		// 在 map[string][]*ImportEntry 中，通配符导入的 key 通常是 "*"
+		imports, ok := fCtx.Imports["*"]
+		if !ok || len(imports) == 0 {
+			t.Fatalf("Wildcard imports not found in FileContext")
+		}
+
+		found := false
+		for _, imp := range imports {
+			if imp.RawImportPath == "java.lang.annotation.*" && imp.IsWildcard {
+				found = true
+				break
+			}
+		}
+
+		if !found {
+			t.Errorf("Expected wildcard import 'java.lang.annotation.*' not found under key '*'")
+		}
+	})
+
+	// 验证 3: 注解的函数定义、默认返回值及特殊属性
+	t.Run("Verify Annotation Members", func(t *testing.T) {
+		// 调整：注解成员在 QN 中不带括号，因为它们不是真正的 method_declaration
+		levelQN := "com.example.base.annotation.Loggable.level()"
+		levelDefs := findDefinitionsByQN(fCtx, levelQN)
+		if len(levelDefs) == 0 {
+			t.Fatalf("Annotation member level not found with QN: %s", levelQN)
+		}
+
+		levelElem := levelDefs[0].Element
+		if isAnno, _ := levelElem.Extra.Mores[java.MethodIsAnnotation].(bool); !isAnno {
+			t.Errorf("level should have MethodIsAnnotation = true")
+		}
+		if defVal := levelElem.Extra.Mores[java.MethodDefaultValue]; defVal != "\"INFO\"" {
+			t.Errorf("Expected default value \"INFO\", got %v", defVal)
+		}
+
+		// 验证 trace 及其默认值
+		traceQN := "com.example.base.annotation.Loggable.trace()"
+		traceDefs := findDefinitionsByQN(fCtx, traceQN)
+		if len(traceDefs) == 0 {
+			t.Fatalf("Annotation member trace not found")
+		}
+
+		traceElem := traceDefs[0].Element
+		if defVal := traceElem.Extra.Mores[java.MethodDefaultValue]; defVal != "false" {
+			t.Errorf("Expected default value false, got %v", traceElem.Extra.Mores[java.MethodDefaultValue])
+		}
+	})
+}
+
+func TestJavaCollector_EnumErrorCode(t *testing.T) {
+	// 1. 初始化解析环境
+	filePath := getTestFilePath(filepath.Join("com", "example", "base", "enum", "ErrorCode.java"))
+	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, false, true)
+	if err != nil {
+		t.Fatalf("Failed to parse file: %v", err)
+	}
+
+	// 2. 执行 Collector
+	collector := java.NewJavaCollector()
+	fCtx, err := collector.CollectDefinitions(rootNode, filePath, sourceBytes)
+	if err != nil {
+		t.Fatalf("CollectDefinitions failed: %v", err)
+	}
+
+	printCodeElements(fCtx)
+
+	// --- 断言开始 ---
+
+	// 1. 验证枚举主体及其全限定名 (QN)
+	t.Run("Verify Enum Entity", func(t *testing.T) {
+		qn := "com.example.base.enum.ErrorCode"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("Enum ErrorCode not found")
+		}
+		elem := defs[0].Element
+		if elem.Kind != model.Enum {
+			t.Errorf("Expected Kind ENUM, got %s", elem.Kind)
+		}
+	})
+
+	// 2. 验证枚举常量及其参数 (使用 java.EnumArguments)
+	t.Run("Verify Enum Constant Arguments", func(t *testing.T) {
+		qn := "com.example.base.enum.ErrorCode.USER_NOT_FOUND"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("Enum constant USER_NOT_FOUND not found")
+		}
+
+		elem := defs[0].Element
+		// 验证枚举常量被识别为 Field (对应你的 identifyElement 逻辑)
+		if elem.Kind != model.EnumConstant {
+			t.Errorf("Expected Enum Constant to be Kind Field, got %s", elem.Kind)
+		}
+
+		// 核心验证：检查参数提取 (404, "User not found...")
+		args, ok := elem.Extra.Mores[java.EnumArguments].([]string)
+		if !ok {
+			t.Fatalf("Metadata key %s (EnumArguments) not found or wrong type", java.EnumArguments)
+		}
+
+		if len(args) != 2 {
+			t.Errorf("Expected 2 arguments, got %d", len(args))
+		}
+		if args[0] != "404" {
+			t.Errorf("Expected first arg 404, got %s", args[0])
+		}
+	})
+
+	// 3. 验证构造函数 (使用 java.MethodIsConstructor)
+	t.Run("Verify Enum Constructor", func(t *testing.T) {
+		// 构造函数 QN 包含参数类型
+		qn := "com.example.base.enum.ErrorCode.ErrorCode(int,String)"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("Enum constructor with QN %s not found", qn)
+		}
+
+		elem := defs[0].Element
+		isCtor, ok := elem.Extra.Mores[java.MethodIsConstructor].(bool)
+		if !ok || !isCtor {
+			t.Errorf("Expected %s to be true", java.MethodIsConstructor)
+		}
+	})
+
+	// 4. 验证成员方法及其返回值类型 (使用 java.MethodReturnType)
+	t.Run("Verify Enum Member Methods", func(t *testing.T) {
+		qn := "com.example.base.enum.ErrorCode.getMessage()"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("Method getMessage() not found")
+		}
+
+		elem := defs[0].Element
+		retType, ok := elem.Extra.Mores[java.MethodReturnType].(string)
+		if !ok || retType != "String" {
+			t.Errorf("Expected return type String, got %v", retType)
+		}
+	})
+}
+
+func TestJavaCollector_NotificationException(t *testing.T) {
+	// 1. 初始化解析环境
+	filePath := getTestFilePath(filepath.Join("com", "example", "base", "exception", "NotificationException.java"))
+	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, false, true)
+	if err != nil {
+		t.Fatalf("Failed to parse file: %v", err)
+	}
+
+	// 2. 执行 Collector
+	collector := java.NewJavaCollector()
+	fCtx, err := collector.CollectDefinitions(rootNode, filePath, sourceBytes)
+	if err != nil {
+		t.Fatalf("CollectDefinitions failed: %v", err)
+	}
+
+	printCodeElements(fCtx)
+
+	// --- 断言开始 ---
+
+	// 1. 验证类的继承关系 (EXTEND)
+	t.Run("Verify Exception Inheritance", func(t *testing.T) {
+		qn := "com.example.base.exception.NotificationException"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("Class NotificationException not found")
+		}
+		elem := defs[0].Element
+
+		// 验证 SuperClass 字段 (对应 java.class.superclass)
+		super, ok := elem.Extra.Mores[java.ClassSuperClass].(string)
+		if !ok || super != "Exception" {
+			t.Errorf("Expected superclass 'Exception', got '%v'", super)
+		}
+	})
+
+	// 2. 验证序列化常量 (Field)
+	t.Run("Verify serialVersionUID Field", func(t *testing.T) {
+		qn := "com.example.base.exception.NotificationException.serialVersionUID"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("Field serialVersionUID not found")
+		}
+		elem := defs[0].Element
+
+		// 验证常量属性 (static + final)
+		isConstant := elem.Extra.Mores[java.FieldIsConstant].(bool)
+		if !isConstant {
+			t.Error("serialVersionUID should be identified as a constant")
+		}
+
+		fieldType := elem.Extra.Mores[java.FieldType].(string)
+		if fieldType != "long" {
+			t.Errorf("Expected type long, got %s", fieldType)
+		}
+	})
+
+	// 3. 验证多个构造函数 (Constructor Overloading)
+	t.Run("Verify Overloaded Constructors", func(t *testing.T) {
+		// 构造函数 A: (String, Throwable)
+		qnA := "com.example.base.exception.NotificationException.NotificationException(String,Throwable)"
+		defsA := findDefinitionsByQN(fCtx, qnA)
+		if len(defsA) == 0 {
+			t.Fatalf("Constructor (String, Throwable) not found")
+		}
+		if !defsA[0].Element.Extra.Mores[java.MethodIsConstructor].(bool) {
+			t.Error("Should be marked as constructor")
+		}
+
+		// 构造函数 B: (ErrorCode)
+		qnB := "com.example.base.exception.NotificationException.NotificationException(ErrorCode)"
+		defsB := findDefinitionsByQN(fCtx, qnB)
+		if len(defsB) == 0 {
+			t.Fatalf("Constructor (ErrorCode) not found")
+		}
+
+		// 验证参数元数据
+		params, _ := defsB[0].Element.Extra.Mores[java.MethodParameters].([]string)
+		if len(params) != 1 || !strings.Contains(params[0], "ErrorCode code") {
+			t.Errorf("Incorrect parameters metadata: %v", params)
+		}
+	})
+}
+
+func TestJavaCollector_User(t *testing.T) {
+	// 1. 初始化解析环境
+	filePath := getTestFilePath(filepath.Join("com", "example", "base", "User.java"))
+	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, false, true)
+	if err != nil {
+		t.Fatalf("Failed to parse file: %v", err)
+	}
+
+	// 2. 执行 Collector
+	collector := java.NewJavaCollector()
+	fCtx, err := collector.CollectDefinitions(rootNode, filePath, sourceBytes)
+	if err != nil {
+		t.Fatalf("CollectDefinitions failed: %v", err)
+	}
+
+	printCodeElements(fCtx)
+
+	// --- 断言开始 ---
+
+	// 1. 验证静态导入 (Static Imports)
+	t.Run("Verify Static Imports", func(t *testing.T) {
+		// 静态导入 DAYS
+		if imp, ok := fCtx.Imports["DAYS"]; !ok {
+			t.Error("Static import 'DAYS' not found in FileContext")
+		} else {
+			entry := imp[0]
+			if entry.Kind != model.Constant {
+				t.Errorf("Expected DAYS to be Kind Constant, got %s", entry.Kind)
+			}
+			if entry.RawImportPath != "java.util.concurrent.TimeUnit.DAYS" {
+				t.Errorf("Incorrect path for DAYS: %s", entry.RawImportPath)
+			}
+		}
+	})
+
+	// 2. 验证静态常量 (Static Final Field)
+	t.Run("Verify Constant Field DEFAULT_ID", func(t *testing.T) {
+		qn := "com.example.base.User.DEFAULT_ID"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("Field DEFAULT_ID not found")
+		}
+		elem := defs[0].Element
+
+		// 验证元数据中的常量标记
+		if isConst, _ := elem.Extra.Mores[java.FieldIsConstant].(bool); !isConst {
+			t.Error("DEFAULT_ID should be identified as a Constant (static + final)")
+		}
+		if fType := elem.Extra.Mores[java.FieldType].(string); fType != "String" {
+			t.Errorf("Expected field type String, got %s", fType)
+		}
+	})
+
+	// 3. 验证静态内部类 (Nested Class)
+	t.Run("Verify Inner Class AddonInfo", func(t *testing.T) {
+		qn := "com.example.base.User.AddonInfo"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("Inner class AddonInfo not found")
+		}
+		elem := defs[0].Element
+		if elem.Kind != model.Class {
+			t.Errorf("Expected Kind Class, got %s", elem.Kind)
+		}
+
+		// 验证内部类字段的递归 QN
+		fieldQN := "com.example.base.User.AddonInfo.otherName"
+		if len(findDefinitionsByQN(fCtx, fieldQN)) == 0 {
+			t.Errorf("Field otherName in inner class not found with QN: %s", fieldQN)
+		}
+	})
+
+	// 4. 验证 if 块产生的作用域 (ScopeBlock)
+	t.Run("Verify If Blocks in chooseUnit", func(t *testing.T) {
+		// chooseUnit 方法内部有多个 if 块。
+		// 根据你的 applyUniqueQN 逻辑，它们应该被命名为 block$1, block$2 等
+		methodQN := "com.example.base.User.AddonInfo.chooseUnit(long)"
+
+		// 验证 block$1 (第一个 if 分支的内容)
+		block1QN := methodQN + ".block$1"
+		defs := findDefinitionsByQN(fCtx, block1QN)
+		if len(defs) == 0 {
+			t.Fatalf("First if-block (block$1) not found in chooseUnit")
+		}
+
+		elem := defs[0].Element
+		if elem.Kind != model.ScopeBlock {
+			t.Errorf("Expected ScopeBlock, got %s", elem.Kind)
+		}
+
+		// 验证 block$2 (第二个 if 分支)
+		block2QN := methodQN + ".block$2"
+		if len(findDefinitionsByQN(fCtx, block2QN)) == 0 {
+			t.Error("Second if-block (block$2) not found")
+		}
+	})
+}
+
+func TestJavaCollector_UserServiceImpl(t *testing.T) {
+	// 1. 初始化解析环境
+	filePath := getTestFilePath(filepath.Join("com", "example", "base", "UserServiceImpl.java"))
+	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, false, true)
+	if err != nil {
+		t.Fatalf("Failed to parse file: %v", err)
+	}
+
+	// 2. 执行 Collector
+	collector := java.NewJavaCollector()
+	fCtx, err := collector.CollectDefinitions(rootNode, filePath, sourceBytes)
+	if err != nil {
+		t.Fatalf("CollectDefinitions failed: %v", err)
+	}
+
+	printCodeElements(fCtx)
+
+	// --- 断言开始 ---
+
+	// 1. 验证类声明：包含注解、复杂的泛型继承与实现
+	t.Run("Verify UserServiceImpl Class Definition", func(t *testing.T) {
+		qn := "com.example.base.UserServiceImpl"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("Class UserServiceImpl not found")
+		}
+		elem := defs[0].Element
+
+		// 验证注解
+		if !contains(elem.Extra.Annotations, "@Loggable") {
+			t.Errorf("Expected annotation @Loggable, got %v", elem.Extra.Annotations)
+		}
+
+		// 验证泛型父类
+		if super := elem.Extra.Mores[java.ClassSuperClass].(string); super != "AbstractBaseEntity<String>" {
+			t.Errorf("Expected superclass AbstractBaseEntity<String>, got %s", super)
+		}
+
+		// 验证泛型接口实现 (DataProcessor<AbstractBaseEntity<String>>)
+		ifaces, ok := elem.Extra.Mores[java.ClassImplementedInterfaces].([]string)
+		if !ok || !contains(ifaces, "DataProcessor<AbstractBaseEntity<String>>") {
+			t.Errorf("Expected interface DataProcessor<AbstractBaseEntity<String>> in %v", ifaces)
+		}
+
+		// 验证完整 Signature
+		expectedSig := "public class UserServiceImpl extends AbstractBaseEntity<String> implements DataProcessor<AbstractBaseEntity<String>>"
+		if elem.Signature != expectedSig {
+			t.Errorf("Signature mismatch.\nGot: %s\nExp: %s", elem.Signature, expectedSig)
+		}
+	})
+
+	// 2. 验证泛型方法：包含 Override 注解、泛型返回值、Throws 异常
+	t.Run("Verify Method processAll", func(t *testing.T) {
+		qn := "com.example.base.UserServiceImpl.processAll(String)"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("Method processAll(String) not found")
+		}
+		elem := defs[0].Element
+
+		// 验证泛型返回值
+		if ret := elem.Extra.Mores[java.MethodReturnType].(string); ret != "List<AbstractBaseEntity<String>>" {
+			t.Errorf("Expected return type List<AbstractBaseEntity<String>>, got %s", ret)
+		}
+
+		// 验证 Throws 声明
+		throws, ok := elem.Extra.Mores[java.MethodThrowsTypes].([]string)
+		if !ok || !contains(throws, "RuntimeException") {
+			t.Errorf("Expected throws RuntimeException, got %v", throws)
+		}
+
+		// 验证方法 Signature (应包含 public 和 throws)
+		if !strings.Contains(elem.Signature, "public List<AbstractBaseEntity<String>> processAll(String batchId)") {
+			t.Errorf("Signature should contain access modifier and generic return type, got: %s", elem.Signature)
+		}
+		if !strings.Contains(elem.Signature, "throws RuntimeException") {
+			t.Errorf("Signature should contain throws clause, got: %s", elem.Signature)
+		}
+	})
+
+	// 3. 验证方法体内的局部变量 (Local Variables)
+	t.Run("Verify Local Variables in processAll", func(t *testing.T) {
+		methodQN := "com.example.base.UserServiceImpl.processAll(String)"
+
+		// 验证 results 变量
+		resultsQN := methodQN + ".results"
+		rDefs := findDefinitionsByQN(fCtx, resultsQN)
+		if len(rDefs) == 0 {
+			t.Errorf("Local variable 'results' not found with QN: %s", resultsQN)
+		} else {
+			vType := rDefs[0].Element.Extra.Mores[java.VariableType].(string)
+			if vType != "List<AbstractBaseEntity<String>>" {
+				t.Errorf("Incorrect type for results: %s", vType)
+			}
+		}
+
+		// 验证 converted 变量 (Cast 表达式后的变量)
+		convertedQN := methodQN + ".converted"
+		cDefs := findDefinitionsByQN(fCtx, convertedQN)
+		if len(cDefs) == 0 {
+			t.Errorf("Local variable 'converted' not found")
+		} else {
+			vType := cDefs[0].Element.Extra.Mores[java.VariableType].(string)
+			if vType != "String" {
+				t.Errorf("Expected type String for 'converted', got %s", vType)
+			}
+		}
+	})
+
+	// 4. 验证构造函数及其内的 Field Access (隐式验证 QN 深度)
+	t.Run("Verify Constructor and Implicit Logic", func(t *testing.T) {
+		// 构造函数 QN 通常以类名命名
+		ctorQN := "com.example.base.UserServiceImpl.UserServiceImpl()"
+		defs := findDefinitionsByQN(fCtx, ctorQN)
+		if len(defs) == 0 {
+			t.Fatalf("Constructor UserServiceImpl() not found")
+		}
+
+		elem := defs[0].Element
+		if !elem.Extra.Mores[java.MethodIsConstructor].(bool) {
+			t.Error("Should be identified as a constructor")
+		}
+	})
+}
+
+func TestJavaCollector_AnonymousAndNested(t *testing.T) {
+	// 1. 初始化解析环境
+	filePath := getTestFilePath(filepath.Join("com", "example", "base", "test", "AnonymousClassTest.java"))
+	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, false, true)
+	if err != nil {
+		t.Fatalf("Failed to parse file: %v", err)
+	}
+
+	// 2. 执行 Collector
+	collector := java.NewJavaCollector()
+	fCtx, err := collector.CollectDefinitions(rootNode, filePath, sourceBytes)
+	if err != nil {
+		t.Fatalf("CollectDefinitions failed: %v", err)
+	}
+
+	printCodeElements(fCtx)
+
+	// --- 断言开始 ---
+
+	// 1. 验证匿名内部类 (通常 QN 带有 $1 等后缀)
+	t.Run("Verify Anonymous Class", func(t *testing.T) {
+		// 匿名类位于 run 方法内部
+		qn := "com.example.base.test.AnonymousClassTest.run().anonymousClass$1"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("Anonymous class not found at %s", qn)
+		}
+		if defs[0].Element.Kind != model.AnonymousClass {
+			t.Errorf("Expected AnonymousClass, got %s", defs[0].Element.Kind)
+		}
+
+		// 验证匿名内部类里的方法
+		methodQN := qn + ".compareTo(String)"
+		if len(findDefinitionsByQN(fCtx, methodQN)) == 0 {
+			t.Errorf("Method compareTo not found inside anonymous class")
+		}
+	})
+
+	// 2. 验证静态内部类
+	t.Run("Verify Static Inner Class", func(t *testing.T) {
+		qn := "com.example.base.test.AnonymousClassTest.Inner"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("Inner class not found")
+		}
+
+		isStatic := defs[0].Element.Extra.Mores[java.ClassIsStatic].(bool)
+		if !isStatic {
+			t.Errorf("Expected Inner class to be static")
+		}
+	})
+
+	// 3. 验证嵌套在内部类里的枚举
+	t.Run("Verify Nested Enum in Inner Class", func(t *testing.T) {
+		qn := "com.example.base.test.AnonymousClassTest.Inner.Color"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("Nested enum Color not found")
+		}
+		if defs[0].Element.Kind != model.Enum {
+			t.Errorf("Expected Enum, got %s", defs[0].Element.Kind)
+		}
+
+		// 验证枚举项
+		constantQN := qn + ".RED"
+		if len(findDefinitionsByQN(fCtx, constantQN)) == 0 {
+			t.Errorf("Enum constant RED not found")
+		}
+	})
+}
+
+func TestJavaCollector_ExtendAndImplement(t *testing.T) {
+	// 1. 初始化解析环境
+	filePath := getTestFilePath(filepath.Join("com", "example", "base", "test", "ExtendAndImplementTest.java"))
+	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, false, true)
+	if err != nil {
+		t.Fatalf("Failed to parse file: %v", err)
+	}
+
+	// 2. 执行 Collector
+	collector := java.NewJavaCollector()
+	fCtx, err := collector.CollectDefinitions(rootNode, filePath, sourceBytes)
+	if err != nil {
+		t.Fatalf("CollectDefinitions failed: %v", err)
+	}
+
+	printCodeElements(fCtx)
+
+	// --- 断言开始 ---
+
+	// 1. 验证抽象类 BaseClass
+	t.Run("Verify Abstract BaseClass", func(t *testing.T) {
+		qn := "com.example.base.test.BaseClass"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("BaseClass not found")
+		}
+		elem := defs[0].Element
+
+		// 验证修饰符
+		if isAbs := elem.Extra.Mores[java.ClassIsAbstract].(bool); !isAbs {
+			t.Errorf("Expected ClassIsAbstract to be true")
+		}
+
+		// 验证接口实现
+		ifaces, _ := elem.Extra.Mores[java.ClassImplementedInterfaces].([]string)
+		if len(ifaces) != 1 || ifaces[0] != "Serializable" {
+			t.Errorf("Expected interface Serializable, got %v", ifaces)
+		}
+
+		// 验证注解 (存在两个注解)
+		annos := elem.Extra.Annotations
+		if len(annos) != 2 {
+			t.Errorf("Expected 2 annotations, got %d", len(annos))
+		}
+	})
+
+	// 2. 验证最终类 FinalClass
+	t.Run("Verify Final FinalClass", func(t *testing.T) {
+		qn := "com.example.base.test.FinalClass"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("FinalClass not found")
+		}
+		elem := defs[0].Element
+
+		// 验证 Final 状态
+		if isFinal := elem.Extra.Mores[java.ClassIsFinal].(bool); !isFinal {
+			t.Errorf("Expected ClassIsFinal to be true")
+		}
+
+		// 验证父类继承
+		super, _ := elem.Extra.Mores[java.ClassSuperClass].(string)
+		if super != "BaseClass" {
+			t.Errorf("Expected SuperClass BaseClass, got %s", super)
+		}
+
+		// 验证多接口实现
+		ifaces, _ := elem.Extra.Mores[java.ClassImplementedInterfaces].([]string)
+		expectedIfaces := []string{"Cloneable", "Runnable"}
+		if len(ifaces) != 2 {
+			t.Errorf("Expected 2 interfaces, got %v", ifaces)
+		}
+		for _, expected := range expectedIfaces {
 			found := false
-			for _, m := range modifiers {
-				if m == mod {
+			for _, got := range ifaces {
+				if got == expected {
 					found = true
 					break
 				}
 			}
 			if !found {
-				t.Errorf("Modifier %q not found in %v", mod, modifiers)
+				t.Errorf("Expected interface %s not found in %v", expected, ifaces)
 			}
-		}
-
-		// 验证字段类型
-		if elem.Extra.FieldExtra.Type != "long" {
-			t.Errorf("Expected field type 'long', got %q", elem.Extra.FieldExtra.Type)
 		}
 	})
 
-	// 7. 验证构造函数重载 (USE 关系)
-	t.Run("Verify Overloaded Constructors QN", func(t *testing.T) {
-		defs := fCtx.DefinitionsBySN[className]
-		var constructors []*model.CodeElement
-		for _, d := range defs {
-			if d.Element.Kind == model.Method {
-				constructors = append(constructors, d.Element)
+	// 3. 验证方法重写与 Signature
+	t.Run("Verify Override Method Signature", func(t *testing.T) {
+		qn := "com.example.base.test.FinalClass.run()"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("Method run() not found")
+		}
+		elem := defs[0].Element
+
+		// 验证包含 @Override 注解
+		hasOverride := false
+		for _, anno := range elem.Extra.Annotations {
+			if strings.Contains(anno, "Override") {
+				hasOverride = true
+				break
 			}
 		}
-
-		if len(constructors) != 2 {
-			t.Errorf("Expected 2 constructors, found %d", len(constructors))
+		if !hasOverride {
+			t.Errorf("Method run() should have @Override annotation")
 		}
-
-		foundTwoParamCtor := false
-		foundOneParamCtor := false
-
-		for _, c := range constructors {
-			me := c.Extra.MethodExtra
-			require.NotNil(t, me)
-
-			// 场景 A: NotificationException(String message, Throwable cause)
-			if len(me.Parameters) == 2 {
-				foundTwoParamCtor = true
-
-				// 校验 QualifiedName: 擦除泛型，仅保留类型
-				// 注意：java.lang.String 在源码中写为 String，按 collector 逻辑会提取为 String
-				expectedQN := classQN + ".NotificationException(String,Throwable)"
-				assert.Equal(t, expectedQN, c.QualifiedName, "Two-param constructor QN mismatch")
-
-				// 校验 IncludeParamNameQN: 包含参数名
-				expectedFullQN := classQN + ".NotificationException(String message, Throwable cause)"
-				assert.Equal(t, expectedFullQN, me.IncludeParamNameQN, "Two-param constructor Full QN mismatch")
-			}
-
-			// 场景 B: NotificationException(ErrorCode code)
-			if len(me.Parameters) == 1 {
-				foundOneParamCtor = true
-
-				// 校验 QualifiedName
-				expectedQN := classQN + ".NotificationException(ErrorCode)"
-				assert.Equal(t, expectedQN, c.QualifiedName, "One-param constructor QN mismatch")
-
-				// 校验 IncludeParamNameQN
-				expectedFullQN := classQN + ".NotificationException(ErrorCode code)"
-				assert.Equal(t, expectedFullQN, me.IncludeParamNameQN, "One-param constructor Full QN mismatch")
-			}
-		}
-
-		assert.True(t, foundTwoParamCtor, "Constructor (String, Throwable) not found")
-		assert.True(t, foundOneParamCtor, "Constructor (ErrorCode) not found")
 	})
-
-	fmt.Println("Java Collector NotificationException test completed successfully.")
 }
 
-// 验证静态导入
-// 验证类 User 成员
-// 验证内部类
-// 验证内部类的私有静态方法
-func TestJavaCollector_User(t *testing.T) {
-	// 1. 获取测试文件路径
-	filePath := getTestFilePath(filepath.Join("com", "example", "model", "User.java"))
-
-	// 2. 解析源码
-	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, true, true)
+func TestJavaCollector_GenericComplex(t *testing.T) {
+	// 1. 初始化解析环境
+	filePath := getTestFilePath(filepath.Join("com", "example", "base", "test", "GenericTest.java"))
+	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, false, true)
 	if err != nil {
 		t.Fatalf("Failed to parse file: %v", err)
 	}
 
-	// 3. 运行 Collector
+	// 2. 执行 Collector
 	collector := java.NewJavaCollector()
 	fCtx, err := collector.CollectDefinitions(rootNode, filePath, sourceBytes)
 	if err != nil {
 		t.Fatalf("CollectDefinitions failed: %v", err)
 	}
+
 	printCodeElements(fCtx)
 
-	// 4. 验证 Package 和 Imports
-	t.Run("Verify Package and Static Imports", func(t *testing.T) {
-		expectedPackage := "com.example.model"
-		if fCtx.PackageName != expectedPackage {
-			t.Errorf("Expected PackageName %q, got %q", expectedPackage, fCtx.PackageName)
-		}
+	// --- 断言开始 ---
 
-		// 验证静态导入 (例如 DAYS)
-		if imp, ok := fCtx.Imports["DAYS"]; ok {
-			if imp.Kind != model.Constant {
-				t.Errorf("Expected DAYS to be Kind CONSTANT, got %s", imp.Kind)
-			}
-			if imp.RawImportPath != "java.util.concurrent.TimeUnit.DAYS" {
-				t.Errorf("Wrong import path for DAYS: %s", imp.RawImportPath)
-			}
-		} else {
-			t.Error("Static import 'DAYS' not found")
-		}
-	})
-
-	// 5. 验证外部类 User 成员
-	const classQN = "com.example.model.User"
-	const addonInfoQN = "com.example.model.User.AddonInfo"
-	// 5. 验证外部类 User 成员 (补充方法 QN 校验)
-	t.Run("Verify User Method and Constructor QNs", func(t *testing.T) {
-		// A. 验证构造函数 User(String username)
-		if defs := fCtx.DefinitionsBySN["User"]; len(defs) > 0 {
-			var ctor *model.CodeElement
-			for _, d := range defs {
-				if d.Element.Kind == model.Method { // 构造函数在 collector 中标记为 Method
-					ctor = d.Element
-					break
-				}
-			}
-			require.NotNil(t, ctor)
-			// QN: 稳定索引
-			assert.Equal(t, classQN+".User(String)", ctor.QualifiedName)
-			// IncludeParamNameQN: 带参数名
-			assert.Equal(t, classQN+".User(String username)", ctor.Extra.MethodExtra.IncludeParamNameQN)
-		}
-
-		// B. 验证 setUsername(String username)
-		if defs := fCtx.DefinitionsBySN["setUsername"]; len(defs) > 0 {
-			elem := defs[0].Element
-			assert.Equal(t, classQN+".setUsername(String)", elem.QualifiedName)
-			assert.Equal(t, classQN+".setUsername(String username)", elem.Extra.MethodExtra.IncludeParamNameQN)
-		}
-
-		// C. 验证 getId() (无参)
-		if defs := fCtx.DefinitionsBySN["getId"]; len(defs) > 0 {
-			elem := defs[0].Element
-			assert.Equal(t, classQN+".getId()", elem.QualifiedName)
-			assert.Equal(t, classQN+".getId()", elem.Extra.MethodExtra.IncludeParamNameQN)
-		}
-	})
-
-	// 6. 验证内部类 AddonInfo (Nested Class)
-	t.Run("Verify Nested Class AddonInfo", func(t *testing.T) {
-		innerClassName := "AddonInfo"
-		defs := fCtx.DefinitionsBySN[innerClassName]
+	// 1. 验证接口泛型边界 (Intersection Type: Serializable & Cloneable)
+	t.Run("Verify Interface Generic Bounds", func(t *testing.T) {
+		qn := "com.example.base.test.GenericTest"
+		defs := findDefinitionsByQN(fCtx, qn)
 		if len(defs) == 0 {
-			t.Fatalf("Nested class %q not found", innerClassName)
+			t.Fatalf("Interface GenericTest not found")
 		}
-
 		elem := defs[0].Element
-		expectedQN := "com.example.model.User.AddonInfo"
-		if elem.QualifiedName != expectedQN {
-			t.Errorf("Expected QN %q, got %q", expectedQN, elem.QualifiedName)
+
+		// 验证 Signature 是否保留了泛型边界
+		// 预期: interface GenericTest<T extends Serializable & Cloneable>
+		if !strings.Contains(elem.Signature, "<T extends Serializable & Cloneable>") {
+			t.Errorf("Signature missing intersection type bounds: %s", elem.Signature)
+		}
+	})
+
+	// 2. 验证复杂的方法参数与返回类型 (List<? extends T>)
+	t.Run("Verify Complex Wildcard Method", func(t *testing.T) {
+		// 注意：QN 构建时会提取参数类型，并移除泛型部分以保证稳定性
+		qn := "com.example.base.test.GenericTest.findAllByCriteria(List)"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("Method findAllByCriteria not found")
+		}
+		elem := defs[0].Element
+
+		// 验证返回值 (MethodReturnType)
+		retType, _ := elem.Extra.Mores[java.MethodReturnType].(string)
+		if retType != "List<? extends T>" {
+			t.Errorf("Expected return type List<? extends T>, got %s", retType)
 		}
 
-		// 验证内部类的字段及其多种修饰符
-		fieldTests := []struct {
-			name string
-			mod  string // 预期包含的修饰符，空字符串代表 default
+		// 验证原始参数列表 (MethodParameters)
+		params, _ := elem.Extra.Mores[java.MethodParameters].([]string)
+		if len(params) == 0 || params[0] != "List<? super T> criteria" {
+			t.Errorf("Expected param List<? super T> criteria, got %v", params)
+		}
+	})
+
+	// 3. 验证方法级泛型与异常声明 (throws E)
+	t.Run("Verify Method-level Generics and Throws", func(t *testing.T) {
+		qn := "com.example.base.test.GenericTest.executeOrThrow(E)"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("Method executeOrThrow not found")
+		}
+		elem := defs[0].Element
+
+		// 验证 Signature 包含泛型定义 <E extends Exception>
+		if !strings.Contains(elem.Signature, "<E extends Exception>") {
+			t.Errorf("Signature missing method-level generic: %s", elem.Signature)
+		}
+
+		// 验证 Throws 元数据
+		throws, _ := elem.Extra.Mores[java.MethodThrowsTypes].([]string)
+		if len(throws) == 0 || throws[0] != "E" {
+			t.Errorf("Expected throws E, got %v", throws)
+		}
+	})
+}
+
+func TestJavaCollector_Imports(t *testing.T) {
+	filePath := getTestFilePath(filepath.Join("com", "example", "base", "test", "ImportTest.java"))
+	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, false, true)
+	if err != nil {
+		t.Fatalf("Failed to parse file: %v", err)
+	}
+
+	collector := java.NewJavaCollector()
+	fCtx, err := collector.CollectDefinitions(rootNode, filePath, sourceBytes)
+	if err != nil {
+		t.Fatalf("CollectDefinitions failed: %v", err)
+	}
+
+	printCodeElements(fCtx)
+
+	// 1. 验证 Class 导入: import java.util.List;
+	t.Run("Verify Specific Class Import", func(t *testing.T) {
+		imps, exists := fCtx.Imports["List"]
+		if !exists || len(imps) == 0 {
+			t.Fatalf("Import 'List' not found")
+		}
+		// 取第一个（通常 List 在此类中只有一个导入）
+		imp := imps[0]
+		if imp.RawImportPath != "java.util.List" {
+			t.Errorf("Expected java.util.List, got %s", imp.RawImportPath)
+		}
+		if imp.Kind != model.Class {
+			t.Errorf("Expected Kind Class, got %s", imp.Kind)
+		}
+	})
+
+	// 2. 验证通配符导入 (重点：验证 slice 中包含两个通配符)
+	t.Run("Verify Multiple Wildcard Imports", func(t *testing.T) {
+		imps, exists := fCtx.Imports["*"]
+		if !exists || len(imps) < 2 {
+			t.Fatalf("Expected at least 2 wildcard imports, found %d", len(imps))
+		}
+
+		paths := make(map[string]bool)
+		for _, imp := range imps {
+			paths[imp.RawImportPath] = true
+		}
+
+		// 验证 java.util.*
+		if !paths["java.util.*"] {
+			t.Errorf("Wildcard import java.util.* not found in %v", paths)
+		}
+		// 验证 static java.lang.Math.*
+		if !paths["java.lang.Math.*"] {
+			t.Errorf("Static wildcard import java.lang.Math.* not found in %v", paths)
+		}
+	})
+
+	// 3. 验证具体静态方法导入: import static java.util.Collections.sort;
+	t.Run("Verify Static Method Import", func(t *testing.T) {
+		imps, exists := fCtx.Imports["sort"]
+		if !exists || len(imps) == 0 {
+			t.Fatalf("Static import 'sort' not found")
+		}
+		imp := imps[0]
+		if imp.RawImportPath != "java.util.Collections.sort" {
+			t.Errorf("Expected java.util.Collections.sort, got %s", imp.RawImportPath)
+		}
+		// 静态非通配符导入，handleImport 标记为 Constant
+		if imp.Kind != model.Constant {
+			t.Errorf("Expected Kind Constant, got %s", imp.Kind)
+		}
+	})
+}
+
+func TestJavaCollector_MethodOverloading(t *testing.T) {
+	// 1. 初始化解析环境
+	filePath := getTestFilePath(filepath.Join("com", "example", "base", "test", "MethodTest.java"))
+	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, false, true)
+	if err != nil {
+		t.Fatalf("Failed to parse file: %v", err)
+	}
+
+	// 2. 执行 Collector
+	collector := java.NewJavaCollector()
+	fCtx, err := collector.CollectDefinitions(rootNode, filePath, sourceBytes)
+	if err != nil {
+		t.Fatalf("CollectDefinitions failed: %v", err)
+	}
+
+	printCodeElements(fCtx)
+
+	// --- 断言开始 ---
+
+	// 1. 验证构造函数识别
+	t.Run("Verify Constructor", func(t *testing.T) {
+		qn := "com.example.base.MethodTest.MethodTest()"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("Constructor not found by QN: %s", qn)
+		}
+		elem := defs[0].Element
+
+		if isCons, _ := elem.Extra.Mores[java.MethodIsConstructor].(bool); !isCons {
+			t.Errorf("Expected MethodIsConstructor to be true")
+		}
+		if elem.Kind != model.Method {
+			t.Errorf("Expected Kind Method, got %s", elem.Kind)
+		}
+	})
+
+	// 2. 验证方法重载 (Overloading) 的 QN 唯一性
+	t.Run("Verify Method Overloading QNs", func(t *testing.T) {
+		overloads := []struct {
+			qn       string
+			expected string
 		}{
-			{"otherName", "public"},
-			{"age", "private"},
-			{"birthday", "protected"},
-			{"workTimeUnit", ""}, // Default access
+			{"com.example.base.MethodTest.exec(int)", "void"},
+			{"com.example.base.MethodTest.exec(String)", "String"},
+			{"com.example.base.MethodTest.exec(int,String)", "void"},
 		}
 
-		for _, ft := range fieldTests {
-			fDefs := fCtx.DefinitionsBySN[ft.name]
-			// 过滤出属于 AddonInfo 的字段
-			var target *model.CodeElement
-			for _, fd := range fDefs {
-				if strings.HasPrefix(fd.Element.QualifiedName, expectedQN) {
-					target = fd.Element
-					break
-				}
-			}
-
-			if target == nil {
-				t.Errorf("Field %q in AddonInfo not found", ft.name)
+		for _, tc := range overloads {
+			defs := findDefinitionsByQN(fCtx, tc.qn)
+			if len(defs) == 0 {
+				t.Errorf("Method overload not found: %s", tc.qn)
 				continue
 			}
 
-			if ft.mod != "" && !contains(target.Extra.Modifiers, ft.mod) {
-				t.Errorf("Field %q expected modifier %q, got %v", ft.name, ft.mod, target.Extra.Modifiers)
+			// 验证返回值提取
+			retType, _ := defs[0].Element.Extra.Mores[java.MethodReturnType].(string)
+			if retType != tc.expected {
+				t.Errorf("For %s, expected return type %s, got %s", tc.qn, tc.expected, retType)
 			}
 		}
 	})
 
-	// 7. 验证内部类的私有静态方法
-	t.Run("Verify Private Static Method QN in Nested Class", func(t *testing.T) {
-		methodName := "chooseUnit"
-		defs := fCtx.DefinitionsBySN[methodName]
-		require.NotEmpty(t, defs)
+	// 3. 验证 FileContext 里的 SN (Short Name) 聚合
+	t.Run("Verify SN Aggregation", func(t *testing.T) {
+		// exec 这个名字应该对应 3 个定义
+		entries, exists := fCtx.DefinitionsBySN["exec"]
+		if !exists {
+			t.Fatalf("SN 'exec' not found in DefinitionsBySN")
+		}
+		if len(entries) != 3 {
+			t.Errorf("Expected 3 overloads for 'exec', found %d", len(entries))
+		}
 
-		elem := defs[0].Element
-		// QN 路径应包含完整的内部类路径
-		assert.Equal(t, addonInfoQN+".chooseUnit(long)", elem.QualifiedName)
-		assert.Equal(t, addonInfoQN+".chooseUnit(long nanos)", elem.Extra.MethodExtra.IncludeParamNameQN)
-
-		if elem.Extra.MethodExtra.ReturnType != "TimeUnit" {
-			t.Errorf("Expected return type TimeUnit, got %s", elem.Extra.MethodExtra.ReturnType)
+		// 验证 QN 是否各不相同
+		qnSet := make(map[string]bool)
+		for _, entry := range entries {
+			qnSet[entry.Element.QualifiedName] = true
+		}
+		if len(qnSet) != 3 {
+			t.Errorf("Duplicate QNs detected in SN aggregation: %v", qnSet)
 		}
 	})
-
-	fmt.Println("Java Collector User (with Nested Class) test completed successfully.")
 }
 
-// 验证变长参数与数组类型
-//
-//	验证复杂注解提取
-func TestJavaCollector_ConfigService(t *testing.T) {
-	// 1. 获取测试文件路径
-	filePath := getTestFilePath(filepath.Join("com", "example", "config", "ConfigService.java"))
-
-	// 2. 解析源码
-	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, true, true)
+func TestJavaCollector_ParameterScope(t *testing.T) {
+	// 1. 初始化解析环境
+	filePath := getTestFilePath(filepath.Join("com", "example", "base", "test", "ParameterScopeTest.java"))
+	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, false, true)
 	if err != nil {
 		t.Fatalf("Failed to parse file: %v", err)
 	}
 
-	// 3. 运行 Collector
+	// 2. 执行 Collector
 	collector := java.NewJavaCollector()
 	fCtx, err := collector.CollectDefinitions(rootNode, filePath, sourceBytes)
 	if err != nil {
 		t.Fatalf("CollectDefinitions failed: %v", err)
 	}
+
 	printCodeElements(fCtx)
 
-	// 4. 验证 Package
-	expectedPackage := "com.example.config"
-	if fCtx.PackageName != expectedPackage {
-		t.Errorf("Expected PackageName %q, got %q", expectedPackage, fCtx.PackageName)
-	}
+	// --- 断言开始 ---
 
-	// 5. 验证变长参数与数组类型 (补充 QN 校验)
-	const classQN = "com.example.config.ConfigService"
-	t.Run("Verify Arrays and Varargs QN", func(t *testing.T) {
-		methodName := "updateConfigs"
-		defs := fCtx.DefinitionsBySN[methodName]
-		require.NotEmpty(t, defs)
-
-		elem := defs[0].Element
-		mExtra := elem.Extra.MethodExtra
-		require.NotNil(t, mExtra)
-
-		// 验证 QualifiedName (用于稳定索引)
-		// 数组应保留 [], 变长参数应保留 ...
-		// 期望: 包名.类名.方法名(String[],Object...)
-		expectedQN := classQN + ".updateConfigs(String[],Object...)"
-		assert.Equal(t, expectedQN, elem.QualifiedName, "QN should correctly represent arrays and varargs")
-
-		// 验证 IncludeParamNameQN (用于详细展示)
-		// 期望: 包名.类名.方法名(String[] keys, Object... values)
-		expectedFullQN := classQN + ".updateConfigs(String[] keys, Object... values)"
-		assert.Equal(t, expectedFullQN, mExtra.IncludeParamNameQN, "Full QN should include parameter names with types")
-	})
-
-	// 6. 验证复杂注解方法全路径 (补充 legacyMethod 校验)
-	t.Run("Verify Annotated Method QN", func(t *testing.T) {
-		methodName := "legacyMethod"
-		defs := fCtx.DefinitionsBySN[methodName]
-		require.NotEmpty(t, defs)
-
-		elem := defs[0].Element
-		mExtra := elem.Extra.MethodExtra
-
-		// 无参方法 QN
-		assert.Equal(t, classQN+".legacyMethod()", elem.QualifiedName)
-		assert.Equal(t, classQN+".legacyMethod()", mExtra.IncludeParamNameQN)
-	})
-
-	fmt.Println("Java Collector ConfigService boundary test completed successfully.")
-}
-
-// 验证接口定义与多重泛型边界
-// 验证复杂泛型参数的方法 (List<? extends T>)
-// 验证方法级别的泛型与抛出异常 (Method-level Generics)
-func TestJavaCollector_GenericRepository(t *testing.T) {
-	// 1. 获取测试文件路径
-	filePath := getTestFilePath(filepath.Join("com", "example", "repo", "GenericRepository.java"))
-
-	// 2. 解析源码
-	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, true, true)
-	if err != nil {
-		t.Fatalf("Failed to parse file: %v", err)
-	}
-
-	// 3. 运行 Collector
-	collector := java.NewJavaCollector()
-	fCtx, err := collector.CollectDefinitions(rootNode, filePath, sourceBytes)
-	if err != nil {
-		t.Fatalf("CollectDefinitions failed: %v", err)
-	}
-	printCodeElements(fCtx)
-
-	// 4. 验证接口定义与多重泛型边界
-	const interfaceQN = "com.example.repo.GenericRepository"
-	t.Run("Verify Interface with Multiple Bounds", func(t *testing.T) {
-		defs := fCtx.DefinitionsBySN["GenericRepository"]
+	// 1. 验证构造函数参数
+	t.Run("Verify Constructor Parameter", func(t *testing.T) {
+		// 注意 QN 路径：类 -> 构造函数 -> 参数
+		qn := "com.example.base.test.ParameterScopeTest.ParameterScopeTester(String).initialConfig"
+		defs := findDefinitionsByQN(fCtx, qn)
 		if len(defs) == 0 {
-			t.Fatal("Interface 'GenericRepository' not found")
+			t.Fatalf("Constructor parameter 'initialConfig' not found at %s", qn)
 		}
 
 		elem := defs[0].Element
-		if elem.Kind != model.Interface {
-			t.Errorf("Expected Kind INTERFACE, got %s", elem.Kind)
+		if elem.Kind != model.Variable {
+			t.Errorf("Expected Kind Variable, got %s", elem.Kind)
 		}
-		assert.Equal(t, interfaceQN, elem.QualifiedName)
-
-		// 验证 Doc
-		if !strings.Contains(elem.Doc, "Serializable 和 Cloneable") {
-			t.Errorf("Doc mismatch: %q", elem.Doc)
+		if isParam := elem.Extra.Mores[java.VariableIsParam].(bool); !isParam {
+			t.Error("Expected VariableIsParam to be true")
 		}
-
-		// 【补全验证】：验证泛型定义是否被包含在 Signature 中
-		// 理想情况下，Signature 应为 "public interface GenericRepository<T extends Serializable & Cloneable>"
-		expectedPart := "<T extends Serializable & Cloneable>"
-		if !strings.Contains(elem.Signature, expectedPart) {
-			t.Errorf("Interface signature missing generic parameters.\nExpected part: %q\nActual: %q",
-				expectedPart, elem.Signature)
-		}
-
-		// 如果你将泛型信息存储在 ClassExtra 中，也可以增加如下断言
-		// assert.Contains(t, elem.Extra.ClassExtra.TypeParameters, "T extends Serializable & Cloneable")
 	})
 
-	// 5. 验证复杂泛型参数的方法 (补充 QN 校验)
-	t.Run("Verify Wildcard Generics QN", func(t *testing.T) {
-		methodName := "findAllByCriteria"
-		defs := fCtx.DefinitionsBySN[methodName]
-		require.NotEmpty(t, defs)
+	// 2. 验证变长参数 (Varargs)
+	t.Run("Verify Varargs Parameter", func(t *testing.T) {
+		qn := "com.example.base.test.ParameterScopeTest.execute(int,String...).labels"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("Varargs parameter 'labels' not found")
+		}
 
-		elem := defs[0].Element
-		mExtra := elem.Extra.MethodExtra
-		require.NotNil(t, mExtra)
-
-		// 验证 QualifiedName: 擦除通配符和泛型，保留基础类型
-		// 期望: ...GenericRepository.findAllByCriteria(List)
-		expectedQN := interfaceQN + ".findAllByCriteria(List)"
-		assert.Equal(t, expectedQN, elem.QualifiedName, "QN should erase wildcards")
-
-		// 验证 IncludeParamNameQN: 保留完整泛型通配符和参数名
-		// 期望: ...GenericRepository.findAllByCriteria(List<? super T> criteria)
-		expectedFullQN := interfaceQN + ".findAllByCriteria(List<? super T> criteria)"
-		assert.Equal(t, expectedFullQN, mExtra.IncludeParamNameQN)
+		vType := defs[0].Element.Extra.Mores[java.VariableType].(string)
+		// 验证你的 extractTypeString 是否正确处理了 "..."
+		if !strings.Contains(vType, "...") {
+			t.Errorf("Expected type with '...', got %s", vType)
+		}
 	})
 
-	// 6. 验证方法级别的泛型与抛出异常 (补充 QN 校验)
-	t.Run("Verify Method Generics and Throws QN", func(t *testing.T) {
-		methodName := "executeOrThrow"
-		defs := fCtx.DefinitionsBySN[methodName]
-		require.NotEmpty(t, defs)
+	// 3. 验证内部类方法参数的作用域层级
+	t.Run("Verify Inner Class Method Parameter", func(t *testing.T) {
+		qn := "com.example.base.test.ParameterScopeTest.InnerWorker.doWork(long).duration"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("Inner class method parameter 'duration' not found")
+		}
 
-		elem := defs[0].Element
-		mExtra := elem.Extra.MethodExtra
-		require.NotNil(t, mExtra)
+		// 验证路径层级是否包含 InnerWorker
+		if !strings.Contains(defs[0].Element.QualifiedName, "InnerWorker") {
+			t.Errorf("Parameter QN missing inner class scope: %s", defs[0].Element.QualifiedName)
+		}
 
-		// 验证 QualifiedName: 方法级别的泛型 E 会被擦除为其上界（此处为 Object 或 E）
-		// 根据 collector 逻辑 strings.Split(tStr, "<")[0]，泛型 E 会保留 E
-		expectedQN := interfaceQN + ".executeOrThrow(E)"
-		assert.Equal(t, expectedQN, elem.QualifiedName)
-
-		// 验证 IncludeParamNameQN: 保留参数名
-		expectedFullQN := interfaceQN + ".executeOrThrow(E exception)"
-		assert.Equal(t, expectedFullQN, mExtra.IncludeParamNameQN)
+		// 验证 Signature 格式: long duration
+		if !strings.Contains(defs[0].Element.Signature, "long duration") {
+			t.Errorf("Invalid signature: %s", defs[0].Element.Signature)
+		}
 	})
-
-	fmt.Println("Java Collector GenericRepository test completed successfully.")
 }
 
-// 验证 Record 特性
-// 验证 Sealed Interface
-// 验证实现类
-func TestJavaCollector_ModernJava(t *testing.T) {
-	// 1. 获取测试文件路径
-	filePath := getTestFilePath(filepath.Join("com", "example", "modern", "DataModel.java"))
-
-	// 2. 解析源码
-	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, true, false)
+func TestJavaCollector_ScopeAndShadowing(t *testing.T) {
+	// 1. 初始化解析环境
+	filePath := getTestFilePath(filepath.Join("com", "example", "base", "test", "ScopeTest.java"))
+	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, false, true)
 	if err != nil {
 		t.Fatalf("Failed to parse file: %v", err)
 	}
 
-	// 3. 运行 Collector
+	// 2. 执行 Collector
 	collector := java.NewJavaCollector()
 	fCtx, err := collector.CollectDefinitions(rootNode, filePath, sourceBytes)
 	if err != nil {
 		t.Fatalf("CollectDefinitions failed: %v", err)
 	}
+
 	printCodeElements(fCtx)
 
-	// 4. 验证 Record 特性 (UserPoint)
-	const pkg = "com.example.modern"
-	// 4. 验证 Record 特性 (UserPoint)
-	t.Run("Verify Record UserPoint QN", func(t *testing.T) {
-		const recordQN = pkg + ".UserPoint"
+	// --- 断言开始 ---
 
-		defs := fCtx.DefinitionsBySN["UserPoint"]
-		require.NotEmpty(t, defs)
-		assert.Equal(t, recordQN, defs[0].Element.QualifiedName)
+	// 1. 验证方法直接作用域下的变量 x (第一次出现，无后缀)
+	t.Run("Verify Root Method Variable", func(t *testing.T) {
+		qn := "com.example.base.ScopeTest.test().x" // 修正：移除 $1
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("Root variable x not found")
+		}
+	})
 
-		// 验证静态字段 ORIGIN
-		originDef := fCtx.DefinitionsBySN["ORIGIN"]
-		require.NotEmpty(t, originDef)
-		assert.Equal(t, recordQN+".ORIGIN", originDef[0].Element.QualifiedName)
+	// 2. 验证第一个独立代码块 { int x = 2; }
+	t.Run("Verify First Block Shadowing", func(t *testing.T) {
+		// block 始终带 $n，但 block 内部的第一个 x 不带 $n
+		qn := "com.example.base.ScopeTest.test().block$1.x"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("Variable in block$1 not found")
+		}
+	})
 
-		// 验证 Record 组件 (x, y)
-		// 注意：根据 collector 逻辑，组件会被同时识别为 Field 和 Method(Accessor)
-		for _, comp := range []string{"x", "y"} {
-			compDefs := fCtx.DefinitionsBySN[comp]
-			require.NotEmpty(t, compDefs, "Component %q should be defined", comp)
+	// 3. 验证 if 分支代码块 { int x = 3; }
+	t.Run("Verify If-Statement Block", func(t *testing.T) {
+		qn := "com.example.base.ScopeTest.test().block$2.x"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("Variable in block$2 not found")
+		}
+	})
 
-			var hasField, hasMethod bool
-			for _, d := range compDefs {
-				if d.Element.Kind == model.Field {
-					hasField = true
-					// 字段 QN：com.example.modern.UserPoint.x
-					assert.Equal(t, recordQN+"."+comp, d.Element.QualifiedName)
+	// 4. 验证 Lambda 表达式及其内部变量
+	t.Run("Verify Lambda Scope", func(t *testing.T) {
+		// QN: com.example.base.ScopeTest.test().lambda$1.x
+		lambdaVarQN := "com.example.base.ScopeTest.test().lambda$1.x"
+		if len(findDefinitionsByQN(fCtx, lambdaVarQN)) == 0 {
+			t.Errorf("Variable x not found inside Lambda block scope")
+		}
+
+		// QN: com.example.base.ScopeTest.test().lambda$1.a
+		lambdaVarA := "com.example.base.ScopeTest.test().lambda$1.a"
+		if len(findDefinitionsByQN(fCtx, lambdaVarA)) == 0 {
+			t.Errorf("Variable a not found inside Lambda block scope")
+		}
+
+		// QN: com.example.base.ScopeTest.test().lambda$1.b
+		lambdaVarB := "com.example.base.ScopeTest.test().lambda$1.b"
+		if len(findDefinitionsByQN(fCtx, lambdaVarB)) == 0 {
+			t.Errorf("Variable b not found inside Lambda block scope")
+		}
+
+		// QN: com.example.base.ScopeTest.test().lambda$1.c
+		lambdaVarC := "com.example.base.ScopeTest.test().lambda$1.c"
+		if len(findDefinitionsByQN(fCtx, lambdaVarC)) == 0 {
+			t.Errorf("Variable c not found inside Lambda block scope")
+		}
+	})
+
+	// 5. 验证 Lambda 多参数识别
+	t.Run("Verify Lambda Multi-Parameters", func(t *testing.T) {
+		// 情况 A: (p1, p2) -> ...
+		// 注意：在你的 identifyLambdaParameter 逻辑中，这些会被识别为 Variable
+		params := []string{"p1", "p2", "v1", "v2"}
+		for _, p := range params {
+			// 根据你的 QN 生成逻辑，这些参数属于对应的 lambda$n
+			// 需要通过 printCodeElements 确认具体的 lambda 序号，这里假设是 lambda$2 和 lambda$3
+			found := false
+			for _, entry := range fCtx.DefinitionsBySN[p] {
+				if strings.Contains(entry.Element.QualifiedName, "lambda") {
+					found = true
+					break
 				}
-				if d.Element.Kind == model.Method {
-					hasMethod = true
-					// 访问器方法 QN：com.example.modern.UserPoint.x()
-					assert.Equal(t, recordQN+"."+comp+"()", d.Element.QualifiedName)
-					// Record 方法的 IncludeParamNameQN 通常与 QN 一致（无参）
-					assert.Equal(t, recordQN+"."+comp+"()", d.Element.Extra.MethodExtra.IncludeParamNameQN)
-				}
 			}
-			assert.True(t, hasField, "Should have Field definition for %q", comp)
-			assert.True(t, hasMethod, "Should have Method definition for %q", comp)
-		}
-	})
-
-	// 5. 验证 Sealed Interface (Shape)
-	t.Run("Verify Sealed Interface Shape QN", func(t *testing.T) {
-		defs := fCtx.DefinitionsBySN["Shape"]
-		require.NotEmpty(t, defs)
-
-		elem := defs[0].Element
-		assert.Equal(t, pkg+".Shape", elem.QualifiedName)
-		assert.Contains(t, elem.Extra.Modifiers, "sealed")
-	})
-
-	// 6. 验证实现类 (Circle)
-	t.Run("Verify Final Class Circle QN", func(t *testing.T) {
-		defs := fCtx.DefinitionsBySN["Circle"]
-		require.NotEmpty(t, defs)
-
-		elem := defs[0].Element
-		// 虽然 Circle 不是 public，但它在当前 package 下，QN 应包含完整包名
-		assert.Equal(t, pkg+".Circle", elem.QualifiedName)
-		assert.Contains(t, elem.Extra.Modifiers, "final")
-	})
-
-	fmt.Println("Java Collector Modern Java Features test completed successfully.")
-}
-
-// 验证顶层类
-// 验证方法内部的局部类
-// 验证局部类内部的方法
-// 匿名内部类安全性验证
-func TestJavaCollector_CallbackManager(t *testing.T) {
-	// 1. 获取测试文件路径
-	filePath := getTestFilePath(filepath.Join("com", "example", "service", "CallbackManager.java"))
-
-	// 2. 解析源码
-	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, true, true)
-	if err != nil {
-		t.Fatalf("Failed to parse file: %v", err)
-	}
-
-	// 3. 运行 Collector
-	collector := java.NewJavaCollector()
-	fCtx, err := collector.CollectDefinitions(rootNode, filePath, sourceBytes)
-	if err != nil {
-		t.Fatalf("CollectDefinitions failed: %v", err)
-	}
-	printCodeElements(fCtx)
-
-	const pkg = "com.example.service"
-	const managerQN = pkg + ".CallbackManager"
-
-	// 4. 验证顶层类
-	t.Run("Verify Top Level Class", func(t *testing.T) {
-		defs := fCtx.DefinitionsBySN["CallbackManager"]
-		require.NotEmpty(t, defs)
-		assert.Equal(t, managerQN, defs[0].Element.QualifiedName)
-	})
-
-	// 5. 验证方法内部的局部类 (Local Class)
-	t.Run("Verify Local Class QN", func(t *testing.T) {
-		localClassName := "LocalValidator"
-		defs := fCtx.DefinitionsBySN[localClassName]
-		require.NotEmpty(t, defs)
-
-		elem := defs[0].Element
-		// 核心修正：register 方法无参，其 QN 为 register()
-		// 因此局部类路径为：CallbackManager.register().LocalValidator
-		expectedQN := managerQN + ".register().LocalValidator"
-		assert.Equal(t, expectedQN, elem.QualifiedName, "Local class QN should follow method QN format")
-
-		if elem.Kind != model.Class {
-			t.Errorf("Expected Kind CLASS, got %s", elem.Kind)
-		}
-	})
-
-	// 6. 验证局部类内部的方法 (带参数后缀校验)
-	t.Run("Verify Method Inside Local Class QN", func(t *testing.T) {
-		methodName := "isValid"
-		defs := fCtx.DefinitionsBySN[methodName]
-		require.NotEmpty(t, defs)
-
-		elem := defs[0].Element
-		me := elem.Extra.MethodExtra
-		require.NotNil(t, me)
-
-		// 预期: CallbackManager.register().LocalValidator.isValid()
-		expectedQN := managerQN + ".register().LocalValidator.isValid()"
-		assert.Equal(t, expectedQN, elem.QualifiedName, "Method inside local class QN mismatch")
-
-		// 校验带参数名的 QN (由于无参，与 QN 一致)
-		assert.Equal(t, expectedQN, me.IncludeParamNameQN)
-	})
-
-	// 7. 匿名内部类安全性与 register 方法校验
-	t.Run("Verify Register Method and Anonymous Safety", func(t *testing.T) {
-		// 校验外部 register 方法本身
-		regDefs := fCtx.DefinitionsBySN["register"]
-		require.NotEmpty(t, regDefs)
-		assert.Equal(t, managerQN+".register()", regDefs[0].Element.QualifiedName)
-
-		// 遍历检查，确保没有空的 QN 或损坏的路径
-		for _, entries := range fCtx.DefinitionsBySN {
-			for _, entry := range entries {
-				qn := entry.Element.QualifiedName
-				// 匿名类不应该有名称，因此不应出现在索引中
-				assert.NotEmpty(t, entry.Element.Name)
-				assert.NotContains(t, qn, "..")
+			if !found {
+				t.Errorf("Lambda parameter %s not found in any lambda scope", p)
 			}
 		}
 	})
 }
 
-// 验证 Record 定义解析
-// 验证 Record Components (Field + Method)
-// 验证紧凑构造函数 (Compact Constructor)
-// 验证显式定义的方法
-// 验证变长参数 (Varargs) 类型处理
-// 验证构造函数参数
-// 验证深层嵌套（内部类方法）参数
-func TestJavaCollector_ModernRecord(t *testing.T) {
-	// 1. 获取测试文件路径
-	filePath := getTestFilePath(filepath.Join("com", "example", "shop", "ModernOrderProcessor.java"))
-
-	// 2. 解析源码
-	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, true, true)
+func TestJavaCollector_ScopeVariable(t *testing.T) {
+	// 1. 初始化解析环境
+	filePath := getTestFilePath(filepath.Join("com", "example", "base", "test", "ScopeVariableTest.java"))
+	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, false, true)
 	if err != nil {
 		t.Fatalf("Failed to parse file: %v", err)
 	}
 
-	// 3. 运行 Collector
+	// 2. 执行 Collector
 	collector := java.NewJavaCollector()
 	fCtx, err := collector.CollectDefinitions(rootNode, filePath, sourceBytes)
 	if err != nil {
 		t.Fatalf("CollectDefinitions failed: %v", err)
 	}
+
 	printCodeElements(fCtx)
 
-	const pkg = "com.example.shop"
-	const recordQN = pkg + ".Order"
+	// --- 断言开始 ---
+	// 定义期望的变量路径 (相对于包名 com.example.base.test)
+	baseQN := "com.example.base.test.ScopeVariableTest.test()"
 
-	// 4. 验证 Record 定义解析
-	t.Run("Verify Record Declaration", func(t *testing.T) {
-		orderDefs := fCtx.DefinitionsBySN["Order"]
-		require.NotEmpty(t, orderDefs)
+	expectedScopes := map[string]string{
+		"bis":  baseQN + ".block$1.bis",
+		"e":    baseQN + ".block$2.e",
+		"i":    baseQN + ".block$3.i",
+		"item": baseQN + ".block$4.item",
+		"s":    baseQN + ".block$5.s",
+		"list": baseQN + ".list", // list 是方法一级变量，不进入 block
+		"obj":  baseQN + ".obj",  // obj 同上
+	}
 
-		orderElem := orderDefs[0].Element
-		assert.Equal(t, model.Class, orderElem.Kind)
-		assert.Equal(t, recordQN, orderElem.QualifiedName)
-	})
-
-	// 5. 验证 Record Components (Field + Method)
-	t.Run("Verify Record Components and Implicit Accessors QN", func(t *testing.T) {
-		priceDefs := fCtx.DefinitionsBySN["price"]
-		// 应包含 Field 'price' 和 Method 'price()'
-		assert.GreaterOrEqual(t, len(priceDefs), 2)
-
-		var hasField, hasMethod bool
-		for _, d := range priceDefs {
-			if d.Element.Kind == model.Field {
-				hasField = true
-				// 字段 QN: com.example.shop.Order.price
-				assert.Equal(t, recordQN+".price", d.Element.QualifiedName)
+	for varName, expectedQN := range expectedScopes {
+		t.Run("Verify_"+varName, func(t *testing.T) {
+			entries, ok := fCtx.DefinitionsBySN[varName]
+			if !ok || len(entries) == 0 {
+				t.Fatalf("Variable %s not found in definitions", varName)
 			}
-			if d.Element.Kind == model.Method {
-				hasMethod = true
-				// 访问器方法 QN: com.example.shop.Order.price()
-				assert.Equal(t, recordQN+".price()", d.Element.QualifiedName)
-				// 校验 IncludeParamNameQN (无参)
-				assert.Equal(t, recordQN+".price()", d.Element.Extra.MethodExtra.IncludeParamNameQN)
-			}
-		}
-		assert.True(t, hasField)
-		assert.True(t, hasMethod)
-	})
 
-	// 6. 验证紧凑构造函数 (Compact Constructor)
-	t.Run("Verify Compact Constructor QN", func(t *testing.T) {
-		constructorDefs := fCtx.DefinitionsBySN["Order"]
+			// 验证 QN 是否匹配
+			actualQN := entries[0].Element.QualifiedName
+			if actualQN != expectedQN {
+				t.Errorf("Variable %s QN mismatch:\n  Expected: %s\n  Actual:   %s",
+					varName, expectedQN, actualQN)
+			}
+
+			// 验证 Kind 是否为 Variable
+			if entries[0].Element.Kind != model.Variable {
+				t.Errorf("Variable %s has wrong kind: %v", varName, entries[0].Element.Kind)
+			}
+		})
+	}
+}
+
+func TestJavaCollector_SyntacticSugar_Step1(t *testing.T) {
+	// 1. 初始化解析环境
+	filePath := getTestFilePath(filepath.Join("com", "example", "sugar", "SugarClassTest.java"))
+	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, false, true)
+	if err != nil {
+		t.Fatalf("Failed to parse file: %v", err)
+	}
+
+	// 2. 执行 Collector (包含第4步：语法糖增强)
+	collector := java.NewJavaCollector()
+	fCtx, err := collector.CollectDefinitions(rootNode, filePath, sourceBytes)
+	if err != nil {
+		t.Fatalf("CollectDefinitions failed: %v", err)
+	}
+
+	printCodeElements(fCtx)
+
+	// --- 断言开始 ---
+
+	// 1. 验证默认构造函数补全
+	// 在测试代码中，直接检查 SN 映射
+	t.Run("Verify_Implicit_Default_Constructor", func(t *testing.T) {
+		shortName := "DefaultConstructor"
+		qn := "com.example.sugar.DefaultConstructor.DefaultConstructor()"
+
 		found := false
-		for _, d := range constructorDefs {
-			// 紧凑构造函数对应 Record 完整参数列表
-			// 期望 QN: com.example.shop.Order.Order(String,double)
-			if d.Element.Kind == model.Method && strings.Contains(d.Element.QualifiedName, recordQN+".Order(") {
-				found = true
-				assert.Equal(t, recordQN+".Order(String,double)", d.Element.QualifiedName)
-				assert.Equal(t, recordQN+".Order(String id, double price)", d.Element.Extra.MethodExtra.IncludeParamNameQN)
+		// 显式遍历 fCtx 的定义，不要信任外部封装的 find 函数
+		if entries, ok := fCtx.DefinitionsBySN[shortName]; ok {
+			for _, e := range entries {
+				if e.Element.QualifiedName == qn {
+					found = true
+					break
+				}
 			}
 		}
-		assert.True(t, found, "Compact constructor should be indexed with erased types")
+		if !found {
+			t.Errorf("Default constructor NOT found in DefinitionsBySN. QN: %s", qn)
+		}
 	})
 
-	// 7. 验证显式定义的方法
-	t.Run("Verify Explicit Methods QN", func(t *testing.T) {
-		methods := []struct {
-			name string
-			qn   string
+	// 2. 验证 Enum 的自动方法 values()
+	t.Run("Verify Enum values() Method", func(t *testing.T) {
+		qn := "com.example.sugar.Color.values()"
+		defs := findDefinitionsByQN(fCtx, qn)
+
+		if len(defs) == 0 {
+			t.Fatalf("Implicit method values() not found for Enum Color")
+		}
+
+		elem := defs[0].Element
+		expectedSig := "public static Color[] values()"
+		if elem.Signature != expectedSig {
+			t.Errorf("Expected signature %s, got %s", expectedSig, elem.Signature)
+		}
+	})
+
+	// 3. 验证 Enum 的自动方法 valueOf(String)
+	t.Run("Verify Enum valueOf() Method", func(t *testing.T) {
+		qn := "com.example.sugar.Color.valueOf(String)"
+		defs := findDefinitionsByQN(fCtx, qn)
+
+		if len(defs) == 0 {
+			t.Fatalf("Implicit method valueOf(String) not found for Enum Color")
+		}
+
+		elem := defs[0].Element
+		expectedSig := "public static Color valueOf(String name)"
+		if elem.Signature != expectedSig {
+			t.Errorf("Expected signature %s, got %s", expectedSig, elem.Signature)
+		}
+	})
+
+	// 4. 验证原有的显式定义不受影响
+	t.Run("Verify Explicit Enum Constant Still Exists", func(t *testing.T) {
+		qn := "com.example.sugar.Color.RED"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("Explicit enum constant RED should still exist")
+		}
+		if isImplicit := defs[0].Element.Extra.Mores[java.MethodIsImplicit]; isImplicit != nil {
+			t.Errorf("Explicit constant RED should NOT be marked as implicit")
+		}
+	})
+}
+
+func TestJavaCollector_RecordSugar(t *testing.T) {
+	filePath := getTestFilePath(filepath.Join("com", "example", "sugar", "RecordTest.java"))
+	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, false, false)
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+
+	collector := java.NewJavaCollector()
+	fCtx, err := collector.CollectDefinitions(rootNode, filePath, sourceBytes)
+	if err != nil {
+		t.Fatalf("CollectDefinitions failed: %v", err)
+	}
+
+	printCodeElements(fCtx)
+
+	// 1. 验证隐式字段
+	t.Run("Verify Implicit Fields", func(t *testing.T) {
+		qn := "com.example.sugar.User.id"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 || defs[0].Element.Kind != model.Field {
+			t.Errorf("Implicit field 'id' not found or wrong kind")
+		}
+	})
+
+	// 2. 验证隐式 Accessor (id())
+	t.Run("Verify Implicit Accessor id()", func(t *testing.T) {
+		qn := "com.example.sugar.User.id()"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("Implicit accessor id() not found")
+		}
+		if sig := defs[0].Element.Signature; sig != "public Long id()" {
+			t.Errorf("Wrong signature for id(): %s", sig)
+		}
+	})
+
+	// 3. 验证显式覆盖的方法 (name())
+	t.Run("Verify Explicit Accessor name()", func(t *testing.T) {
+		qn := "com.example.sugar.User.name()"
+		defs := findDefinitionsByQN(fCtx, qn)
+		if len(defs) == 0 {
+			t.Fatalf("Method name() not found")
+		}
+
+		// 修正：在 Record 中，"name" 既是字段也是方法，所以 SN 列表长度应该是 2
+		// 我们应该验证：在该 SN 下，Method 类型的定义是否只有一个
+		methodCount := 0
+		var methodDef *model.CodeElement
+		for _, d := range fCtx.DefinitionsBySN["name"] {
+			if d.Element.Kind == model.Method {
+				methodCount++
+				methodDef = d.Element
+			}
+		}
+
+		if methodCount != 1 {
+			t.Errorf("Expected 1 method definition for name(), found %d", methodCount)
+		}
+
+		// 验证显式定义没有被标记为隐式
+		isImp, _ := methodDef.Extra.Mores[java.MethodIsImplicit].(bool)
+		if isImp {
+			t.Errorf("Explicitly defined method name() should NOT be marked as implicit")
+		}
+	})
+}
+
+func TestJavaCollector_TryWithResources(t *testing.T) {
+	// 1. 初始化解析环境
+	// 假设文件路径为 com/example/sugar/TryWithResourcesTest.java
+	filePath := getTestFilePath(filepath.Join("com", "example", "sugar", "TryWithResourcesTest.java"))
+	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, false, true)
+	if err != nil {
+		t.Fatalf("Failed to parse file: %v", err)
+	}
+
+	// 2. 执行 Collector
+	collector := java.NewJavaCollector()
+	fCtx, err := collector.CollectDefinitions(rootNode, filePath, sourceBytes)
+	if err != nil {
+		t.Fatalf("CollectDefinitions failed: %v", err)
+	}
+
+	// 打印结果便于调试
+	printCodeElements(fCtx)
+
+	// --- 断言开始 ---
+	baseQN := "com.example.sugar.TryWithResourcesTest.test()"
+
+	// 场景 1: 验证标准定义 (input 应该在第一个 block 中)
+	t.Run("Scenario_SingleResource", func(t *testing.T) {
+		varName := "input"
+		expectedQN := baseQN + ".block$1.input"
+
+		entries, ok := fCtx.DefinitionsBySN[varName]
+		if !ok || len(entries) == 0 {
+			t.Fatalf("Variable %s not found", varName)
+		}
+
+		actualQN := entries[0].Element.QualifiedName
+		if actualQN != expectedQN {
+			t.Errorf("Variable %s QN mismatch:\n  Expected: %s\n  Actual:   %s", varName, expectedQN, actualQN)
+		}
+	})
+
+	// 场景 2: 验证多个资源及其唯一性 (out 和 in 应该都在第二个 block 中)
+	t.Run("Scenario_MultipleResources", func(t *testing.T) {
+		resources := []struct {
+			name     string
+			expected string
 		}{
-			{"process", recordQN + ".process()"},
-			{"log", recordQN + ".log()"},
+			{"out", baseQN + ".block$2.out"},
+			{"in", baseQN + ".block$2.in"},
 		}
-		for _, m := range methods {
-			defs := fCtx.DefinitionsBySN[m.name]
-			require.NotEmpty(t, defs)
-			assert.Equal(t, model.Method, defs[0].Element.Kind)
-			assert.Equal(t, m.qn, defs[0].Element.QualifiedName)
+
+		for _, res := range resources {
+			entries, ok := fCtx.DefinitionsBySN[res.name]
+			if !ok || len(entries) == 0 {
+				t.Errorf("Variable %s not found", res.name)
+				continue
+			}
+
+			actualQN := entries[0].Element.QualifiedName
+			if actualQN != res.expected {
+				t.Errorf("Variable %s QN mismatch:\n  Expected: %s\n  Actual:   %s", res.name, res.expected, actualQN)
+			}
+
+			// 额外验证：父级应该是同一个 block$2
+			if entries[0].ParentQN != baseQN+".block$2" {
+				t.Errorf("Variable %s has wrong ParentQN: %s", res.name, entries[0].ParentQN)
+			}
 		}
 	})
 
-	// 8. 修正后的参数作用域验证 (假设这些参数存在于 Order 的某个方法中)
-	// 注意：此处修正了原测试用例中路径与文件名不符的问题
-	t.Run("Verify Parameter Scopes in Order", func(t *testing.T) {
-		// 验证 Record 组件作为参数（在构造函数中）
-		idParamDefs := fCtx.DefinitionsBySN["id"]
-		foundIdParam := false
-		for _, d := range idParamDefs {
-			// 参数 QN: 类.方法(参数).参数名
-			if d.Element.Kind == model.Variable && strings.Contains(d.Element.QualifiedName, ".Order(String,double).id") {
-				foundIdParam = true
-				assert.Equal(t, recordQN+".Order(String,double).id", d.Element.QualifiedName)
+	// 验证：方法下应该只有 2 个 block
+	t.Run("Verify_BlockCount", func(t *testing.T) {
+		blocks := fCtx.DefinitionsBySN["block"]
+		// 注意：这里需要过滤出属于 test() 方法下的 block
+		count := 0
+		for _, b := range blocks {
+			if strings.HasPrefix(b.Element.QualifiedName, baseQN) {
+				count++
 			}
 		}
-		assert.True(t, foundIdParam, "Record component 'id' as constructor parameter not found")
+		if count != 2 {
+			t.Errorf("Expected 2 blocks in test(), but found %d", count)
+		}
 	})
 }
 
-// Lombok
-func TestJavaCollector_LombokSupport(t *testing.T) {
-	// --- Case A: @Data (Getter/Setter 注入) ---
-	t.Run("Verify Lombok @Data (User.java)", func(t *testing.T) {
-		// 1. 获取测试文件路径
-		collector := java.NewJavaCollector()
-		parser := getJavaParser(t)
-		filePath := getTestFilePath(filepath.Join("com", "example", "lombok", "User.java"))
-		rootNode, sourceBytes, _ := parser.ParseFile(filePath, true, true)
-		fCtx, _ := collector.CollectDefinitions(rootNode, filePath, sourceBytes)
+func TestJavaCollector_Lambda(t *testing.T) {
+	filePath := getTestFilePath(filepath.Join("com", "example", "sugar", "LambdaTest.java"))
+	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, false, true)
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
 
-		const classQN = "com.example.lombok.User"
+	collector := java.NewJavaCollector()
+	fCtx, err := collector.CollectDefinitions(rootNode, filePath, sourceBytes)
+	if err != nil {
+		t.Fatalf("CollectDefinitions failed: %v", err)
+	}
 
-		// 断言：虚拟 Getter 注入
-		getNameDefs := fCtx.DefinitionsBySN["getName"]
-		require.NotEmpty(t, getNameDefs, "Should generate getName() for @Data")
-		assert.Equal(t, classQN+".getName()", getNameDefs[0].Element.QualifiedName)
-		assert.Equal(t, model.Method, getNameDefs[0].Element.Kind)
+	printCodeElements(fCtx)
 
-		// 断言：虚拟 Setter 注入
-		setNameDefs := fCtx.DefinitionsBySN["setName"]
-		require.NotEmpty(t, setNameDefs, "Should generate setName(String) for @Data")
-		// 注意：Setter 应该带有参数类型擦除后的 QN
-		assert.Equal(t, classQN+".setName(String)", setNameDefs[0].Element.QualifiedName)
+	const qnPrefix = "com.example.sugar.LambdaTest.testLambda()"
+
+	// 1. 验证 Lambda 自身的元数据与 Signature
+	t.Run("Verify Lambda Metadata", func(t *testing.T) {
+		testCases := []struct {
+			name            string
+			qn              string
+			expectedSig     string
+			expectedParams  string
+			expectedIsBlock bool
+		}{
+			{
+				name:            "Inferred Multi-params",
+				qn:              qnPrefix + ".lambda$1",
+				expectedSig:     "(a, b) -> expr",
+				expectedParams:  "(a, b)",
+				expectedIsBlock: false,
+			},
+			{
+				name:            "Single Param No Paren",
+				qn:              qnPrefix + ".lambda$2",
+				expectedSig:     "s -> {...}",
+				expectedParams:  "s",
+				expectedIsBlock: true,
+			},
+		}
+
+		for _, tc := range testCases {
+			t.Run(tc.name, func(t *testing.T) {
+				defs := findDefinitionsByQN(fCtx, tc.qn)
+				if len(defs) == 0 {
+					t.Fatalf("Lambda %s not found", tc.qn)
+				}
+				elem := defs[0].Element
+
+				// 验证 Signature
+				if elem.Signature != tc.expectedSig {
+					t.Errorf("Signature mismatch: got %v, want %v", elem.Signature, tc.expectedSig)
+				}
+
+				// 验证深度解析元数据
+				mores := elem.Extra.Mores
+				if mores[java.LambdaParameters] != tc.expectedParams {
+					t.Errorf("Params mismatch: got %v, want %v", mores[java.LambdaParameters], tc.expectedParams)
+				}
+				if mores[java.LambdaBodyIsBlock] != tc.expectedIsBlock {
+					t.Errorf("IsBlock mismatch: got %v, want %v", mores[java.LambdaBodyIsBlock], tc.expectedIsBlock)
+				}
+			})
+		}
 	})
 
-	// --- Case B: @AllArgsConstructor (构造函数注入) ---
-	t.Run("Verify Lombok Constructors (Item.java)", func(t *testing.T) {
-		collector := java.NewJavaCollector()
-		parser := getJavaParser(t)
-		filePath := getTestFilePath(filepath.Join("com", "example", "lombok", "Item.java"))
-		rootNode, sourceBytes, _ := parser.ParseFile(filePath, true, true)
-		fCtx, _ := collector.CollectDefinitions(rootNode, filePath, sourceBytes)
+	// 2. 验证 Lambda 参数变量 (归属于 lambda$n 作用域)
+	t.Run("Verify Lambda Parameter Variables", func(t *testing.T) {
+		paramVariables := []string{
+			qnPrefix + ".lambda$1.a",
+			qnPrefix + ".lambda$1.b",
+			qnPrefix + ".lambda$2.s",
+		}
 
-		const classQN = "com.example.lombok.Item"
-
-		// 断言：全参构造函数注入
-		// 对应 Item(String id, double price) -> QN: ...Item(String,double)
-		constructorDefs := fCtx.DefinitionsBySN["Item"]
-		foundAllArgs := false
-		for _, d := range constructorDefs {
-			if d.Element.Kind == model.Method && strings.Contains(d.Element.QualifiedName, "(String,double)") {
-				foundAllArgs = true
-				assert.Equal(t, classQN+".Item(String,double)", d.Element.QualifiedName)
-				// 标记为构造函数
-				assert.True(t, d.Element.Extra.MethodExtra.IsConstructor)
+		for _, qn := range paramVariables {
+			defs := findDefinitionsByQN(fCtx, qn)
+			if len(defs) == 0 {
+				t.Errorf("Lambda parameter variable not found: %s", qn)
+			} else {
+				// 验证 Kind 必须是 Variable
+				if defs[0].Element.Kind != model.Variable {
+					t.Errorf("Kind mismatch for %s: got %v", qn, defs[0].Element.Kind)
+				}
 			}
 		}
-		assert.True(t, foundAllArgs, "AllArgsConstructor not found")
 	})
 
-	// --- Case C: @Builder (内部类与流式方法注入) ---
-	t.Run("Verify Lombok @Builder (Config.java)", func(t *testing.T) {
-		collector := java.NewJavaCollector()
-		parser := getJavaParser(t)
-		filePath := getTestFilePath(filepath.Join("com", "example", "lombok", "Config.java"))
-		rootNode, sourceBytes, _ := parser.ParseFile(filePath, true, true)
-		fCtx, _ := collector.CollectDefinitions(rootNode, filePath, sourceBytes)
-
-		const classQN = "com.example.lombok.Config"
-		const builderQN = classQN + ".ConfigBuilder"
-
-		// 1. 断言：静态 builder() 方法
-		builderMethodDefs := fCtx.DefinitionsBySN["builder"]
-		require.NotEmpty(t, builderMethodDefs)
-		assert.Equal(t, classQN+".builder()", builderMethodDefs[0].Element.QualifiedName)
-
-		// 2. 断言：虚拟内部类 ConfigBuilder 存在
-		// 注意：这需要 Collector 能够识别并手动创建这个 Class 元素
-		builderClassDefs := fCtx.DefinitionsBySN["ConfigBuilder"]
-		require.NotEmpty(t, builderClassDefs)
-		assert.Equal(t, model.Class, builderClassDefs[0].Element.Kind)
-		assert.Equal(t, builderQN, builderClassDefs[0].Element.QualifiedName)
-
-		// 3. 断言：Builder 内部的流式设置方法
-		hostMethodDefs := fCtx.DefinitionsBySN["host"]
-		// 理想情况下，我们需要识别这个 host 方法属于 ConfigBuilder 而非 Config
-		foundInBuilder := false
-		for _, d := range hostMethodDefs {
-			if d.ParentQN == builderQN {
-				foundInBuilder = true
-				assert.Equal(t, builderQN+".host(String)", d.Element.QualifiedName)
-			}
+	// 3. 验证 Lambda 内部的局部变量 (prefix)
+	t.Run("Verify Variable Inside Lambda Body", func(t *testing.T) {
+		qnVar := qnPrefix + ".lambda$2.prefix"
+		defs := findDefinitionsByQN(fCtx, qnVar)
+		if len(defs) == 0 {
+			t.Errorf("Variable 'prefix' inside lambda body not found: %s", qnVar)
+			return
 		}
-		assert.True(t, foundInBuilder, "Builder setter 'host' not found in ConfigBuilder")
+
+		// 验证它确实被标记为 Lambda 作用域内的变量
+		elem := defs[0].Element
+		if elem.Name != "prefix" {
+			t.Errorf("Name mismatch: got %v", elem.Name)
+		}
 	})
 }
 
-// 辅助函数
-func contains(slice []string, item string) bool {
-	for _, s := range slice {
-		if s == item {
+func TestJavaCollector_MethodReference(t *testing.T) {
+	// 1. 加载测试文件
+	filePath := getTestFilePath(filepath.Join("com", "example", "sugar", "MethodRefTest.java"))
+	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, false, true)
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+
+	// 2. 执行采集
+	collector := java.NewJavaCollector()
+	fCtx, err := collector.CollectDefinitions(rootNode, filePath, sourceBytes)
+	if err != nil {
+		t.Fatalf("CollectDefinitions failed: %v", err)
+	}
+
+	// 打印结果便于调试
+	printCodeElements(fCtx)
+
+	// 3. 定义全覆盖断言矩阵
+	const qnPrefix = "com.example.sugar.MethodRefTest.testAllMethodReferences()"
+
+	testCases := []struct {
+		name             string
+		expectedQN       string
+		expectedSig      string
+		expectedReceiver string // 新增：预期的 Receiver
+		expectedTarget   string // 新增：预期的 Target (方法名或 new)
+	}{
+		{
+			name:             "Static Method Reference",
+			expectedQN:       qnPrefix + ".method_ref$1",
+			expectedSig:      "Integer::parseInt",
+			expectedReceiver: "Integer",
+			expectedTarget:   "parseInt",
+		},
+		{
+			name:             "Bound Instance Method Reference",
+			expectedQN:       qnPrefix + ".method_ref$2",
+			expectedSig:      "System.out::println",
+			expectedReceiver: "System.out",
+			expectedTarget:   "println",
+		},
+		{
+			name:             "Arbitrary Instance Method Reference",
+			expectedQN:       qnPrefix + ".method_ref$3",
+			expectedSig:      "String::toLowerCase",
+			expectedReceiver: "String",
+			expectedTarget:   "toLowerCase",
+		},
+		{
+			name:             "Constructor Reference",
+			expectedQN:       qnPrefix + ".method_ref$4",
+			expectedSig:      "ArrayList::new",
+			expectedReceiver: "ArrayList",
+			expectedTarget:   "new",
+		},
+		{
+			name:             "Array Constructor Reference",
+			expectedQN:       qnPrefix + ".method_ref$5",
+			expectedSig:      "int[]::new",
+			expectedReceiver: "int[]",
+			expectedTarget:   "new",
+		},
+		{
+			name:             "Generic Method Reference",
+			expectedQN:       qnPrefix + ".method_ref$6",
+			expectedSig:      "this::<String>genericMethod",
+			expectedReceiver: "this",
+			expectedTarget:   "genericMethod",
+		},
+	}
+
+	// 4. 执行循环断言
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			defs := findDefinitionsByQN(fCtx, tc.expectedQN)
+
+			if len(defs) == 0 {
+				t.Errorf("Method reference definition not found: %s", tc.expectedQN)
+				return
+			}
+
+			entry := defs[0]
+			elem := entry.Element
+
+			// 验证 Kind
+			if elem.Kind != model.MethodRef {
+				t.Errorf("Kind mismatch: got %v, want %v", elem.Kind, model.MethodRef)
+			}
+
+			// 验证 Signature
+			if elem.Signature != tc.expectedSig {
+				t.Errorf("Signature mismatch: got %s, want %s", elem.Signature, tc.expectedSig)
+			}
+
+			// 5. 验证深度解析的元数据 (Mores)
+			if elem.Extra == nil || elem.Extra.Mores == nil {
+				t.Errorf("Extra.Mores is nil for %s", tc.name)
+				return
+			}
+
+			actualReceiver := elem.Extra.Mores[java.MethodRefReceiver]
+			actualTarget := elem.Extra.Mores[java.MethodRefTarget]
+
+			if actualReceiver != tc.expectedReceiver {
+				t.Errorf("Receiver mismatch: got %v, want %v", actualReceiver, tc.expectedReceiver)
+			}
+			if actualTarget != tc.expectedTarget {
+				t.Errorf("Target mismatch: got %v, want %v", actualTarget, tc.expectedTarget)
+			}
+		})
+	}
+}
+
+// 辅助函数：根据 QN 在 fCtx 中查找定义
+func findDefinitionsByQN(fCtx *core.FileContext, targetQN string) []*core.DefinitionEntry {
+	var result []*core.DefinitionEntry
+	for _, entries := range fCtx.DefinitionsBySN {
+		for _, entry := range entries {
+			if entry.Element.QualifiedName == targetQN {
+				result = append(result, entry)
+			}
+		}
+	}
+
+	return result
+}
+
+// 辅助函数：判断 slice 是否包含 string
+func contains(s []string, str string) bool {
+	for _, v := range s {
+		if v == str {
 			return true
 		}
 	}
+
 	return false
 }

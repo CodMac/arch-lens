@@ -4,11 +4,11 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/CodMac/arch-lens/core"
 	sitter "github.com/tree-sitter/go-tree-sitter"
 
-	"github.com/CodMac/go-treesitter-dependency-analyzer/model"
-	"github.com/CodMac/go-treesitter-dependency-analyzer/parser"
-	_ "github.com/CodMac/go-treesitter-dependency-analyzer/x/java" // 确保注册 Java 语言
+	"github.com/CodMac/arch-lens/parser"
+	_ "github.com/CodMac/arch-lens/x/java" // 确保注册 Java 语言
 )
 
 // getTestFilePath 辅助函数，用于获取测试文件路径
@@ -19,7 +19,7 @@ func getTestFilePath(name string) string {
 
 func TestTreeSitterParser_ParseFile(t *testing.T) {
 	// 1. 尝试获取并初始化 Java 解析器
-	javaParser, err := parser.NewParser(model.LangJava)
+	javaParser, err := parser.NewParser(core.LangJava)
 	if err != nil {
 		t.Fatalf("Failed to create Java parser: %v", err)
 	}

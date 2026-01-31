@@ -1,185 +1,125 @@
-# Go-TreeSitter Dependency Analyzer
+# Arch-Lens
 
-一个基于 **Tree-sitter** 的高性能、插件化多语言源码依赖分析引擎。
-
-该工具旨在通过 AST（抽象语法树）解析，跨越物理文件边界，构建出包含**层级结构（Containment）与逻辑引用（Logic Dependency）的完整代码知识图谱。虽然目前以 Java 为首个深度支持的语言，但其核心框架设计为语言无关**。
-
-## 🏗️ 核心架构
-
-本项目采用解耦的**三阶段处理流水线**，确保了在复杂符号解析下的高性能表现：
-
-1. **Phase 1: 符号收集 (Collection)**：并发扫描文件，提取类、方法、变量定义，构建全局符号索引（Global Context）。
-2. **Phase 2: 层次补全 (Stitching)**：根据包名及路径，自动织入 `Package -> File -> Class` 的物理与逻辑归属关系。
-3. **Phase 3: 关系提取 (Extraction)**：基于 Tree-sitter Query 捕获动作（如 Call, Create），并利用**继承链算法**进行精确的符号消歧。
+**Arch-Lens** 是一款专为大规模复杂系统设计的**高精度静态架构分析引擎**。它通过深度感知代码语义，能够还原包含泛型细节、闭包捕获、流式调用在内的深层依赖关系，并直接生成可交互的架构拓扑图。
 
 ---
 
-## 📂 核心模块说明
+## 📊 核心数据模型 (Dependency Relations)
 
-| 模块 | 路径 | 职责 |
-| --- | --- | --- |
-| **Model** | `/model` | 定义通用的代码元素、位置信息及关系类型（语言无关）。 |
-| **Parser** | `/parser` | 封装 Tree-sitter 解析逻辑，提供 AST 格式化输出工具。 |
-| **Context** | `/context` | 维护全局符号表（Symbol Table），提供跨文件的符号查找能力。 |
-| **Processor** | `/processor` | 核心调度引擎，负责驱动三阶段流水线的并发执行。 |
-| **Language Extensions** | `/x` | 语言特定实现（如 `/x/java`），包含该语言的收集器、提取器及解析规则。 |
+Arch-Lens 能够识别并提取以下维度的依赖关系，通过 `Mores` 字典提供极细粒度的元数据分析支持：
 
----
-
-## 📊 数据模型 (Data Model)
-
-分析器的输出由 **CodeElement（节点）** 和 **DependencyRelation（边）** 组成。
-
-### 1. CodeElement (代码元素)
-
-```go
-type CodeElement struct {
-    Name          string       // 元素名称 (如: getUser)
-    Kind          ElementKind  // 类型 (Class, Method, Field, etc.)
-    QualifiedName string       // 全限定名 (如: com.auth.Service.getUser)
-    Path          string       // 相对文件路径
-    Location      *Location    // 行列位置信息
-    Signature     string       // 原始代码签名
-}
-
-```
-
-### 2. DependencyRelation (依赖关系)
-
-```go
-type DependencyRelation struct {
-    Type     RelationType // 关系类型 (如 CALL, EXTEND)
-    Source   *CodeElement // 发起方 (如：调用者方法)
-    Target   *CodeElement // 目标方 (如：被调用的方法)
-    Location *Location    // 关系发生的精确源码位置
-}
-
-```
-
-#### 关系分类详述
-
-| 分类 | 类型 | 语义说明        | 捕捉场景示例                                    |
-| --- | - |-------------|-------------------------------------------|
-| **组织结构** | **CONTAIN** | 逻辑层级包含/成员归属 | 包包含类、文件包含类、类包含方法、类包含字段                    |
-| **定义依赖** | **EXTEND** | 继承关系        | 类继承、接口继承（支持跨文件追踪）                         |
-|  | **IMPLEMENT** | 实现关系        | 类实现接口                                     |
-|  | **PARAMETER** | 参数依赖        | 方法签名中的入参类型                                |
-|  | **RETURN** | 返回值依赖       | 方法签名中的返回类型                                |
-|  | **ANNOTATION** | 元数据引用       | 类或方法上标注的注解                                |
-| **逻辑动作** | **CALL** | 方法/函数调用     | 1. `obj.save()` 2. `super()` 调用 3. 静态导入调用 |
-|  | **CREATE** | 实例化         | `new UserService()` 捕获                    |
-|  | **USE** | 成员访问        | 访问字段或静态常量                                 |
-|  | **CAST** | 类型强转        | `(User) obj` 中的类型依赖                       |
+| 关系类型 (Type) | 目标种类 (Target Kind) | 说明 | 核心元数据 (Mores) 举例 |
+| --- | --- | --- | --- |
+| **Contain** | Package, File, Element | 拓扑包含关系（包、文件、成员） | - |
+| **Import** | File, External | 源码级别的导入依赖 | `raw_import_path` |
+| **Extend** | Class, Interface | 类/接口继承 | `is_inherited` |
+| **Implement** | Interface | 接口实现 | - |
+| **Call** | Method | 方法调用、构造函数、方法引用 | `is_chained`, `is_functional` |
+| **Create** | Class | 对象实例化、数组创建 | `is_array`, `variable_name` |
+| **Assign** | Variable, Field | 变量赋值、复合赋值、自增减 | `operator`, `is_initializer` |
+| **Use** | Variable, Field | 标识符引用、字段访问 | **`is_capture`**, `usage_role` |
+| **Capture** | Variable, Field | **闭包捕获**：Lambda 引用外部变量 | `capture_depth`, `is_effectively_final` |
+| **TypeArg** | Class | 泛型参数依赖 | `type_arg_index`, `type_arg_depth` |
+| **Parameter** | Class | 方法形参类型依赖 | `parameter_index`, `is_varargs` |
+| **Return** | Class | 方法返回值类型依赖 | `is_primitive`, `is_array` |
+| **Throw** | Class | 异常抛出（声明或主动抛出） | `is_runtime`, `is_rethrow` |
+| **Annotation** | KAnnotation | 注解引用 | `annotation_target` |
+| **Cast** | Class | 类型转换、Instanceof 检查 | `is_pattern_matching` |
 
 ---
 
-## 🚀 快速开始
+## 🏗 核心架构
 
-本项目依赖 [Tree-sitter](https://tree-sitter.github.io/tree-sitter/) 的 C 库绑定，因此在编译和运行时需要启用 CGO。
+Arch-Lens 将分析逻辑抽象为五个标准阶段，支持高并发流水线作业：
 
-### 1. 编译 (Build)
+1. **Collector**：提取原始定义与元数据。
+2. **Resolver**：执行符号绑定，处理 Import 与通配符。
+3. **Extractor**：执行 Action Query，发现动态行为依赖。
+4. **Linker**：缝合全局拓扑网，构建层级结构。
+5. **NoiseFilter**：执行降噪策略（Raw/Balanced/Pure）。
 
-在项目根目录下执行以下命令生成二进制文件：
+---
+
+## 🛣 路线图 (Roadmap)
+
+### 核心引擎 (Core Engine)
+
+* [ ] **SQL/Cypher Adapter**：支持将结果导入 Neo4j 数据库。
+* [ ] **Diff Analysis**：对比两次 Commit 间的架构耦合变化。
+* [ ] **Increment Mode**：基于 Git 修改范围的增量解析。
+
+### 语言支持 (Language Support)
+
+* **Java (现已支持)**:
+* [ ] **语法糖增强**：自动生成 `Enum.values()`、`Record` Getter 等隐式成员。
+* [ ] **框架增强**：支持 Lombok (`@Data`, `@Builder`) 等编译时生成方法的语法糖注入。
+* [ ] **推断增强**：Lambda 目标函数式接口的 Expected Type 自动推断。
+
+
+* **Go (开发中)**:
+* [ ] Interface 隐式实现映射。
+* [ ] Struct Embedding 关系识别。
+
+
+
+---
+
+## 🛠 快速开始
+
+### 编译 (Build)
+
+Arch-Lens 依赖 `tree-sitter` 动态库，编译前请确保环境已配置相关依赖：
 
 ```bash
-# 必须设置 CGO_ENABLED=1
-export CGO_ENABLED=1
-go build -o deps-analyzer main.go
+# 克隆项目
+git clone https://github.com/CodMac/arch-lens.git
+cd arch-lens
+
+# 下载依赖
+go mod download
+
+# 编译 CLI 工具
+go build -o arch-lens cmd/main.go
 
 ```
 
-### 2. 基础使用 (Usage)
+### 基础使用 (Usage)
 
-编译完成后，你可以通过命令行参数指定分析目标。
+Arch-Lens 提供了强大的命令行接口，支持多种输出格式和过滤等级。
 
-#### 导出分析数据 (JSONL)
+#### 1. 基础 JSONL 导出
 
-默认情况下，工具会生成两个文件：`element.jsonl`（包含所有定义的符号）和 `relation.jsonl`（包含所有依赖关系）。
+分析指定目录，并将结果导出为可供后续处理的 `jsonl` 格式：
 
 ```bash
-./deps-analyzer -lang java -path /your/project/src -out-dir ./output
+./arch-lens -path ./my-project -lang java -level 1 -format jsonl -out-dir ./result
 
 ```
 
-#### 生成可视化图谱 (Mermaid)
+#### 2. 生成 Mermaid 可视化图谱
 
-如果你想直接查看代码结构图，可以使用 `-format mermaid` 参数，它会生成一个可以直接在浏览器中打开的 `visualization.html`。
+如果项目规模适中（默认限制 200 节点内），可以直接导出 HTML 格式的 Mermaid 拓扑图：
 
 ```bash
-./deps-analyzer -lang java -path /your/project/src -format mermaid
+./arch-lens -path ./my-project -format mermaid -out-dir ./visual
 
 ```
 
-### 3. 命令行参数说明
+#### 3. 核心参数说明
 
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
-| `-lang` | `java` | 指定分析的语言（目前支持 `java`，`go` 开发中） |
-| `-path` | `.` | 待分析的源代码项目根目录 |
-| `-out-dir` | `./output` | 结果输出目录 |
-| `-format` | `jsonl` | 输出格式：`jsonl` (数据挖掘用) 或 `mermaid` (可视化用) |
-| `-jobs` | `4` | 并发解析的工作线程数 |
-| `-filter` | `""` | 文件过滤正则表达式（可选） |
+| `-lang` | `java` | 分析的目标语言 |
+| `-path` | `.` | 源码根路径 |
+| `-level` | `1` | **过滤等级**：0(Raw), 1(Balanced), 2(Pure) |
+| `-format` | `jsonl` | **输出格式**：jsonl 或 mermaid |
+| `-jobs` | `4` | 并发执行的任务数 |
+| `-filter` | `""` | 文件过滤正则表达式 |
 
 ---
 
-## 🗺️ 路线图 (Roadmap)
+## 🤝 贡献与许可
 
-本项目采用分阶段演进策略，旨在从当前的 Java 深度支持扩展为全语言的代码分析引擎。
-
-### 1. 核心引擎路标 (Core Engine)
-
-* [x] **插件化架构设计**: 实现基于 `Collector`, `Extractor`, `SymbolResolver` 的多语言扩展接口。
-* [x] **三阶段处理流水线**: 完成“符号收集 -> 层次补全 -> 关系提取”的高效处理流程。
-* [x] **并发扫描引擎**: 支持基于 `Worker Pool` 的多核并发解析，显著提升处理速度。
-* [x] **多格式导出器**: 已支持 `JSONL` 原生数据与 `Mermaid` 可视化 HTML 导出。
-* [ ] **性能监控与缓存**: 引入符号解析 LRU 缓存，并针对万级文件规模进行锁粒度优化。
-
-### 2. Java 语言路标 (Java Extension)
-
-* [x] **基础定义收集**: 完成类、接口、枚举、方法、字段及其 Modifiers/Annotations 的提取。
-* [x] **符号消歧**: 实现基于同包查找、精确导入及 `.*` 通配符导入的解析算法。
-* [x] **Java 17+ Record 支持**: 深度适配 Record 语法，自动关联并生成隐式访问器（Accessor）符号。
-* [x] **内置基础符号表**: 集成 `java.lang`, `java.util`, `java.io` 等核心 API 的映射，减少断链。
-* [ ] **Lombok 虚拟符号模拟**:
-    * 识别 `@Getter`, `@Setter`, `@Data`, `@AllArgsConstructor` 等注解。
-    * 在 `GlobalContext` 中自动为对应类补全虚拟的方法定义，确保调用链不中断。
-* [ ] **链式调用类型推导 (Type Steering)**:
-    * 实现简单的流式 API 类型追踪，解决 `obj.getA().getB()` 的连续解析问题。
-* [ ] **匿名块 QN 生成**: 为 Lambda 表达式与匿名内部类分配唯一 QN，补全函数式编程依赖。
-* [ ] **方法重载 (Overload) 精确匹配**:
-    * 结合参数个数与参数类型 QN，实现对重载方法的精确 Resolve。
-* [ ] **三方库类路径扫描 (Classpath Scanning)**:
-    * 支持解析用户指定的 `lib/*.jar` 或 Maven 本地仓库，补全外部符号定义。
-* [ ] **Spring 框架支持 (规划中)**:
-    * 解析 `@Bean`, `@Component` 等注解构建 Bean 依赖图谱（DI Graph）。
-### 3. 多语言横向扩展 (Language Expansion)
-
-* [ ] **🐹 Go 语言支持** (进行中):
-* [x] 基础语法定义收集。
-* [ ] 适配“同目录即同包”的符号可见性逻辑。
-* [ ] 结构体嵌入（Embedding）与接口隐式实现解析。
-
-
-* [ ] **🐍 Python 支持** (规划中): 处理相对路径导入及轻量级启发式类型推导。
-* [ ] **🕸️ JavaScript/TypeScript** (规划中): 基于 ESM/CommonJS 模块系统的关系提取。
-
----
-
-## 🤝 开源贡献：如何快速开发新语言插件？
-
-本项目通过 `x/` 目录实现插件化。若要增加对 **Go, Python, C++** 等语言的支持，仅需四步：
-
-1. **定义 Language**: 在 `model/language.go` 中增加语言标识。
-2. **实现 Collector**: 定义如何从该语言的 AST 中识别“定义”（定义收集逻辑）。
-3. **实现 Extractor**: 编写 Tree-sitter Query 定义如何捕获动作型依赖（如 Call, Create）。
-4. **实现 SymbolResolver**: 定义该语言的作用域规则（如 Go 的首字母可见性）。
-5. **注册插件**: 在新包的 `init()` 中注册上述实现。
-
-> **提示**：可利用 `/parser` 提供的 `formatSExpression` 工具将目标语言 AST 导出，辅助编写 Query。
-
----
-
-## 📜 License
-
-本项目基于 [MIT License](https://www.google.com/search?q=LICENSE) 协议开源。
+* 欢迎提交 PR 增加新语言支持（如 Go, C++, Python）。
+* 如果你发现了特定的 Java 语法糖未能解析，请提交 Issue 并附带代码片段。
+* 本项目基于 **MIT License** 开源。

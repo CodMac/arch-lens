@@ -1,4 +1,4 @@
-module github.com/CodMac/go-treesitter-dependency-analyzer
+module github.com/CodMac/arch-lens
 
 go 1.25.2
 

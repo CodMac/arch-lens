@@ -1,0 +1,30 @@
+package core
+
+import (
+	"fmt"
+
+	"github.com/CodMac/arch-lens/model"
+)
+
+// Extractor 用于提取文件中的关系，需要全局上下文。
+type Extractor interface {
+	// Extract 基于全局上下文，返回文件中的依赖关系。
+	Extract(filePath string, gCtx *GlobalContext) ([]*model.DependencyRelation, error)
+}
+
+var extractorMap = make(map[Language]Extractor)
+
+// RegisterExtractor 注册一个语言与其对应的 Extractor
+func RegisterExtractor(lang Language, extractor Extractor) {
+	extractorMap[lang] = extractor
+}
+
+// GetExtractor 根据语言类型获取对应的 Extractor 实例。
+func GetExtractor(lang Language) (Extractor, error) {
+	extractor, ok := extractorMap[lang]
+	if !ok {
+		return nil, fmt.Errorf("no extractor registered for language: %s", lang)
+	}
+
+	return extractor, nil
+}
