@@ -105,6 +105,87 @@ func TestJavaExtractor_Annotation(t *testing.T) {
 	}
 }
 
+func TestJavaExtractor_Implement(t *testing.T) {
+	testFile := "testdata/com/example/rel/ImplementRelationSuite.java"
+	files := []string{testFile}
+
+	// 运行第一阶段采集以填充 GlobalContext
+	gCtx := runPhase1Collection(t, files)
+	extractor := java.NewJavaExtractor()
+	allRelations, err := extractor.Extract(testFile, gCtx)
+	if err != nil {
+		t.Fatalf("Extraction failed: %v", err)
+	}
+
+	printRelations(allRelations)
+
+	basePkg := "com.example.rel"
+
+	expectedRels := []struct {
+		relType    model.DependencyType
+		sourceQN   string
+		targetQN   string
+		targetKind model.ElementKind
+	}{
+		// --- 1. 接口继承接口 (BaseApi extends Serializable) ---
+		{
+			relType:    model.Extend,
+			sourceQN:   basePkg + ".BaseApi",
+			targetQN:   "Serializable",
+			targetKind: model.Interface, // 继承接口在模型中通常映射为 Implement 关系
+		},
+		// --- 2. 多接口实现 (MultiImpl implements BaseApi, Runnable, SingleInterface) ---
+		{
+			relType:    model.Implement,
+			sourceQN:   basePkg + ".MultiImpl",
+			targetQN:   "BaseApi",
+			targetKind: model.Interface,
+		},
+		{
+			relType:    model.Implement,
+			sourceQN:   basePkg + ".MultiImpl",
+			targetQN:   "Runnable",
+			targetKind: model.Interface,
+		},
+		{
+			relType:    model.Implement,
+			sourceQN:   basePkg + ".MultiImpl",
+			targetQN:   "SingleInterface",
+			targetKind: model.Interface,
+		},
+		// --- 3. 抽象类实现接口 (AbstractTask implements BaseApi) ---
+		{
+			relType:    model.Implement,
+			sourceQN:   basePkg + ".AbstractTask",
+			targetQN:   "BaseApi",
+			targetKind: model.Interface,
+		},
+		// --- 4. 匿名内部类实现 (new Runnable() { ... }) ---
+		{
+			relType:    model.Extend,
+			sourceQN:   basePkg + ".ImplementRelationSuite.test().anonymousClass$1", // 匹配你 Collector 中的匿名类命名规则
+			targetQN:   "Runnable",
+			targetKind: model.Class,
+		},
+	}
+
+	for _, exp := range expectedRels {
+		found := false
+		for _, rel := range allRelations {
+			// 使用 HasSuffix 匹配 QN，确保包名路径正确
+			if rel.Type == exp.relType &&
+				rel.Target.Name == exp.targetQN &&
+				strings.HasSuffix(rel.Source.QualifiedName, exp.sourceQN) {
+
+				found = true
+				assert.Equal(t, exp.targetKind, rel.Target.Kind, "Kind mismatch for target %s", exp.targetQN)
+				break
+			}
+		}
+		assert.True(t, found, "Missing expected Implement relation: %s -> %s", exp.sourceQN, exp.targetQN)
+	}
+}
+
 func TestJavaExtractor_Call(t *testing.T) {
 	// 1. 准备与提取
 	testFile := "testdata/com/example/rel/CallRelationSuite.java"
@@ -1372,7 +1453,7 @@ func runPhase1Collection(t *testing.T, files []string) *core.GlobalContext {
 	col := java.NewJavaCollector()
 
 	for _, file := range files {
-		rootNode, sourceBytes, err := javaParser.ParseFile(file, true, false)
+		rootNode, sourceBytes, err := javaParser.ParseFile(file, false, false)
 		if err != nil {
 			t.Fatalf("Failed to parse file %s: %v", file, err)
 		}

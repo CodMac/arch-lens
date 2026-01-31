@@ -13,6 +13,8 @@ public class ScopeTest {
 
         Runnable r = () -> {
             int x = 4; // Lambda 作用域
+
+            int a, b, c = 5;
         };
     }
 }

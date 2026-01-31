@@ -68,15 +68,17 @@ func (c *Collector) processTopLevelDeclarations(fCtx *core.FileContext) {
 
 func (c *Collector) collectBasicDefinitions(node *sitter.Node, fCtx *core.FileContext, currentQN string, occurrences map[string]int) {
 	if node.IsNamed() {
-		if elem, kind := c.identifyElement(node, fCtx, currentQN); elem != nil {
-			// 严格保持验证过的 QN 生成逻辑
-			c.applyUniqueQN(elem, node, currentQN, occurrences, fCtx.SourceBytes)
-			fCtx.AddDefinition(elem, currentQN, node)
+		if elems, kind := c.identifyElements(node, fCtx, currentQN); len(elems) > 0 {
+			for _, elem := range elems {
+				c.applyUniqueQN(elem, node, currentQN, occurrences, fCtx.SourceBytes)
+				fCtx.AddDefinition(elem, currentQN, node)
+			}
 
+			// 如果是作用域容器（如类或方法），继续深入
 			if c.isScopeContainer(kind, node) {
 				childOccurrences := make(map[string]int)
 				for i := 0; i < int(node.ChildCount()); i++ {
-					c.collectBasicDefinitions(node.Child(uint(i)), fCtx, elem.QualifiedName, childOccurrences)
+					c.collectBasicDefinitions(node.Child(uint(i)), fCtx, elems[0].QualifiedName, childOccurrences)
 				}
 				return
 			}
@@ -138,9 +140,9 @@ func (c *Collector) refineVariableScopes(fCtx *core.FileContext) {
 // 2. 元素识别逻辑 (Element Identification)
 // =============================================================================
 
-func (c *Collector) identifyElement(node *sitter.Node, fCtx *core.FileContext, parentQN string) (*model.CodeElement, model.ElementKind) {
+func (c *Collector) identifyElements(node *sitter.Node, fCtx *core.FileContext, parentQN string) ([]*model.CodeElement, model.ElementKind) {
 	var kind model.ElementKind
-	var name string
+	var names []string
 	kindStr := node.Kind()
 
 	switch kindStr {
@@ -158,46 +160,56 @@ func (c *Collector) identifyElement(node *sitter.Node, fCtx *core.FileContext, p
 		kind = model.Method
 	case "field_declaration":
 		kind = model.Field
-		name = c.extractVariableName(node, fCtx.SourceBytes)
+		names = c.extractAllVariableNames(node, fCtx.SourceBytes)
 	case "local_variable_declaration", "formal_parameter", "spread_parameter", "resource", "catch_formal_parameter":
-		kind, name = model.Variable, c.extractVariableName(node, fCtx.SourceBytes)
+		kind = model.Variable
+		names = c.extractAllVariableNames(node, fCtx.SourceBytes)
 	case "enhanced_for_statement", "instanceof_expression":
 		if nameNode := node.ChildByFieldName("name"); nameNode != nil {
 			kind = model.Variable
-			name = c.getNodeContent(nameNode, *fCtx.SourceBytes)
+			names = []string{c.getNodeContent(nameNode, *fCtx.SourceBytes)}
 		}
 	case "lambda_expression":
-		kind, name = model.Lambda, "lambda"
+		kind = model.Lambda
+		names = []string{"lambda"}
 	case "method_reference":
-		kind, name = model.MethodRef, "method_ref"
+		kind = model.MethodRef
+		names = []string{"method_ref"}
 	case "static_initializer":
-		kind, name = model.ScopeBlock, "$static"
+		kind = model.ScopeBlock
+		names = []string{"$static"}
 	case "identifier":
 		if k, n := c.identifyLambdaParameter(node, fCtx); k != "" {
-			kind, name = k, n
+			kind = k
+			names = []string{n}
 		}
 	case "block":
-		kind, name = c.identifyBlockType(node)
+		kind, names = c.identifyBlockType(node)
 	case "object_creation_expression":
 		if c.findNamedChildOfType(node, "class_body") != nil {
-			kind, name = model.AnonymousClass, "anonymousClass"
+			kind = model.AnonymousClass
+			names = []string{"anonymousClass"}
 		}
 	}
 
-	if kind != "" && name == "" {
-		name = c.resolveMissingName(node, kind, parentQN, fCtx.SourceBytes)
+	if kind != "" && names == nil {
+		names = []string{c.resolveMissingName(node, kind, parentQN, fCtx.SourceBytes)}
 	}
-	if kind == "" || name == "" {
+	if kind == "" || names == nil {
 		return nil, ""
 	}
 
-	return &model.CodeElement{
-		Kind:         kind,
-		Name:         name,
-		Path:         fCtx.FilePath,
-		Location:     c.extractLocation(node, fCtx.FilePath),
-		IsFormSource: true,
-	}, kind
+	var elements []*model.CodeElement
+	for _, name := range names {
+		elements = append(elements, &model.CodeElement{
+			Kind:         kind,
+			Name:         name,
+			Path:         fCtx.FilePath,
+			Location:     c.extractLocation(node, fCtx.FilePath),
+			IsFormSource: true,
+		})
+	}
+	return elements, kind
 }
 
 func (c *Collector) identifyLambdaParameter(node *sitter.Node, fCtx *core.FileContext) (model.ElementKind, string) {
@@ -205,6 +217,7 @@ func (c *Collector) identifyLambdaParameter(node *sitter.Node, fCtx *core.FileCo
 	if parent == nil {
 		return "", ""
 	}
+
 	pKind := parent.Kind()
 	if pKind == "inferred_parameters" || pKind == "lambda_expression" {
 		// 如果是单参数 Lambda (s -> ...)，确保 identifier 是参数位置而非 Body 位置
@@ -214,29 +227,33 @@ func (c *Collector) identifyLambdaParameter(node *sitter.Node, fCtx *core.FileCo
 				return "", ""
 			}
 		}
+
 		return model.Variable, c.getNodeContent(node, *fCtx.SourceBytes)
 	}
 	return "", ""
 }
 
-func (c *Collector) identifyBlockType(node *sitter.Node) (model.ElementKind, string) {
+func (c *Collector) identifyBlockType(node *sitter.Node) (model.ElementKind, []string) {
 	parent := node.Parent()
 	if parent == nil {
-		return "", ""
+		return "", nil
 	}
+
 	pKind := parent.Kind()
 	if pKind == "class_body" {
-		return model.ScopeBlock, "$instance"
+		return model.ScopeBlock, []string{"$instance"}
 	}
+
 	// 排除已经拥有作用域名称的块，防止 QN 冗余
 	if pKind == "method_declaration" ||
 		pKind == "constructor_declaration" ||
 		pKind == "static_initializer" ||
 		pKind == "lambda_expression" ||
 		pKind == "method_reference" {
-		return "", ""
+		return "", nil
 	}
-	return model.ScopeBlock, "block"
+
+	return model.ScopeBlock, []string{"block"}
 }
 
 // =============================================================================
@@ -273,8 +290,7 @@ func (c *Collector) processMetadataForEntry(entry *core.DefinitionEntry, fCtx *c
 	case model.Variable:
 		c.fillLocalVariableMetadata(elem, node, extra, mods, isFinal, fCtx)
 	case model.EnumConstant:
-		c.fillEnumConstantMetadata(node, extra, fCtx)
-		elem.Signature = elem.Name
+		c.fillEnumConstantMetadata(elem, node, extra, fCtx)
 	case model.Lambda:
 		c.fillLambdaMetadata(elem, node, extra, fCtx)
 	case model.MethodRef:
@@ -285,6 +301,8 @@ func (c *Collector) processMetadataForEntry(entry *core.DefinitionEntry, fCtx *c
 		c.fillMethodReferenceDetails(elem, node, extra, fCtx)
 	case model.ScopeBlock:
 		c.fillScopeBlockMetadata(elem, node, extra)
+	case model.AnonymousClass:
+		c.fillAnonymousClassMetadata(elem, node, extra, fCtx)
 	}
 	elem.Extra = extra
 }
@@ -368,7 +386,9 @@ func (c *Collector) fillLocalVariableMetadata(elem *model.CodeElement, node *sit
 	elem.Signature = strings.TrimSpace(fmt.Sprintf("%s %s %s", strings.Join(mods, " "), vType, elem.Name))
 }
 
-func (c *Collector) fillEnumConstantMetadata(node *sitter.Node, extra *model.Extra, fCtx *core.FileContext) {
+func (c *Collector) fillEnumConstantMetadata(elem *model.CodeElement, node *sitter.Node, extra *model.Extra, fCtx *core.FileContext) {
+	elem.Signature = elem.Name
+
 	if argList := c.findNamedChildOfType(node, "argument_list"); argList != nil {
 		var args []string
 		for i := 0; i < int(argList.NamedChildCount()); i++ {
@@ -467,6 +487,21 @@ func (c *Collector) fillLambdaMetadata(elem *model.CodeElement, node *sitter.Nod
 			bodyType = "{...}"
 		}
 		elem.Signature = fmt.Sprintf("%s -> %s", paramsStr, bodyType)
+	}
+}
+
+func (c *Collector) fillAnonymousClassMetadata(elem *model.CodeElement, node *sitter.Node, extra *model.Extra, fCtx *core.FileContext) {
+	// 在 identifyElement 中, AnonymousClass 锚定的 node 是 "object_creation_expression"
+	if node.Kind() != "object_creation_expression" {
+		return
+	}
+
+	// 提取 new 关键字后的类型，例如 new Runnable() { ... } 中的 Runnable
+	typeNode := node.ChildByFieldName("type")
+	if typeNode != nil {
+		typeName := c.getNodeContent(typeNode, *fCtx.SourceBytes)
+		extra.Mores[AnonymousClassType] = typeName
+		elem.Signature = "anonymous extends/implements " + typeName
 	}
 }
 
@@ -718,16 +753,17 @@ func (c *Collector) extractModifiersAndAnnotations(n *sitter.Node, src []byte) (
 	return mods, annos
 }
 
-func (c *Collector) extractVariableName(node *sitter.Node, src *[]byte) string {
-	if nNode := node.ChildByFieldName("name"); nNode != nil {
-		return c.getNodeContent(nNode, *src)
-	}
-	if vd := c.findNamedChildOfType(node, "variable_declarator"); vd != nil {
-		if nNode := vd.ChildByFieldName("name"); nNode != nil {
-			return c.getNodeContent(nNode, *src)
+func (c *Collector) extractAllVariableNames(node *sitter.Node, src *[]byte) []string {
+	var names []string
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		child := node.NamedChild(uint(i))
+		if child.Kind() == "variable_declarator" {
+			if nNode := child.ChildByFieldName("name"); nNode != nil {
+				names = append(names, c.getNodeContent(nNode, *src))
+			}
 		}
 	}
-	return ""
+	return names
 }
 
 func (c *Collector) extractComments(node *sitter.Node, src *[]byte) (doc, comment string) {

@@ -14,7 +14,7 @@ type Extractor struct{}
 func NewJavaExtractor() *Extractor { return &Extractor{} }
 
 // =============================================================================
-// 1. 主流水线 (Main Pipeline)
+// 主流水线 (Main Pipeline)
 // =============================================================================
 
 func (e *Extractor) Extract(filePath string, gCtx *core.GlobalContext) ([]*model.DependencyRelation, error) {
@@ -23,26 +23,24 @@ func (e *Extractor) Extract(filePath string, gCtx *core.GlobalContext) ([]*model
 		return nil, fmt.Errorf("file context not found: %s", filePath)
 	}
 
-	// 1. 静态结构
+	// 1. 静态结构 + 动作发现
 	hierarchyRels := e.extractHierarchy(fCtx, gCtx)
 	structuralRels := e.extractStructural(fCtx, gCtx)
-
-	// 2. 动作发现
 	actionRels, err := e.discoverActionRelations(fCtx, gCtx)
 	if err != nil {
 		return nil, err
 	}
 
-	// 3. 统一增强
+	// 2. 元数据增强
 	enhanceTargets := append(structuralRels, actionRels...)
 	for _, rel := range enhanceTargets {
 		e.enrichCoreMetadata(rel, fCtx)
 	}
 
-	// 4. Capture关系发现（基于已提取到的ASSIGN和USE关系）
+	// 3. Capture关系发现（基于已提取到的ASSIGN和USE关系）
 	captureRels := e.genCaptureRelations(enhanceTargets)
 
-	// 5. 合并结果
+	// 4. 合并结果
 	var allRels []*model.DependencyRelation
 	allRels = append(allRels, hierarchyRels...)
 	allRels = append(allRels, structuralRels...)
@@ -50,6 +48,194 @@ func (e *Extractor) Extract(filePath string, gCtx *core.GlobalContext) ([]*model
 	allRels = append(allRels, captureRels...)
 
 	return allRels, nil
+}
+
+// =============================================================================
+// 1. 静态结构 + 发现逻辑 (Discovery Logic)
+// =============================================================================
+
+func (e *Extractor) extractHierarchy(fCtx *core.FileContext, gCtx *core.GlobalContext) []*model.DependencyRelation {
+	var rels []*model.DependencyRelation
+	fileSource := gCtx.DefinitionsByQN[fCtx.FilePath][0].Element
+	for _, imports := range fCtx.Imports {
+		for _, imp := range imports {
+			rels = append(rels, &model.DependencyRelation{
+				Type: model.Import, Source: fileSource, Target: e.quickResolve(imp.RawImportPath, imp.Kind, gCtx, fCtx), Location: imp.Location,
+			})
+		}
+	}
+	for _, entries := range fCtx.DefinitionsBySN {
+		for _, entry := range entries {
+			if entry.ParentQN != "" {
+				if parents := gCtx.DefinitionsByQN[entry.ParentQN]; len(parents) > 0 {
+					rels = append(rels, &model.DependencyRelation{Type: model.Contain, Source: parents[0].Element, Target: entry.Element})
+				}
+			}
+		}
+	}
+	return rels
+}
+
+func (e *Extractor) extractStructural(fCtx *core.FileContext, gCtx *core.GlobalContext) []*model.DependencyRelation {
+	var rels []*model.DependencyRelation
+	for _, entries := range fCtx.DefinitionsBySN {
+		for _, entry := range entries {
+			elem := entry.Element
+			if elem.Extra == nil {
+				continue
+			}
+
+			// --- 1. 处理 Class (Extend/Implement) ---
+			if elem.Kind == model.Class {
+				if sc, ok := elem.Extra.Mores[ClassSuperClass].(string); ok && sc != "" {
+					rels = append(rels, &model.DependencyRelation{
+						Type:   model.Extend,
+						Source: elem,
+						Target: e.quickResolve(e.clean(sc), model.Class, gCtx, fCtx),
+					})
+				}
+				if impls, ok := elem.Extra.Mores[ClassImplementedInterfaces].([]string); ok {
+					for _, implName := range impls {
+						rels = append(rels, &model.DependencyRelation{
+							Type:   model.Implement,
+							Source: elem,
+							Target: e.quickResolve(e.clean(implName), model.Interface, gCtx, fCtx),
+						})
+					}
+				}
+			}
+			if elem.Kind == model.AnonymousClass {
+				if sc, ok := elem.Extra.Mores[AnonymousClassType].(string); ok && sc != "" {
+					rels = append(rels, &model.DependencyRelation{
+						Type:   model.Extend,
+						Source: elem,
+						Target: e.quickResolve(e.clean(sc), model.Class, gCtx, fCtx),
+					})
+				}
+			}
+
+			// --- 2. 处理 Interface (Extend) ---
+			if elem.Kind == model.Interface {
+				if impls, ok := elem.Extra.Mores[InterfaceImplementedInterfaces].([]string); ok {
+					for _, implName := range impls {
+						rels = append(rels, &model.DependencyRelation{
+							Type:   model.Extend,
+							Source: elem,
+							Target: e.quickResolve(e.clean(implName), model.Interface, gCtx, fCtx),
+						})
+					}
+				}
+			}
+
+			// --- 3. 处理注解 (Annotation) ---
+			for _, anno := range elem.Extra.Annotations {
+				cleanName := e.clean(anno)
+				rels = append(rels, &model.DependencyRelation{
+					Type: model.Annotation, Source: elem, Target: e.quickResolve(cleanName, model.KAnnotation, gCtx, fCtx),
+					Mores: map[string]interface{}{RelRawText: anno},
+				})
+			}
+
+			// --- 4. 处理方法签名 (Parameter/Return/Throw) ---
+			if elem.Kind == model.Method {
+				if pts, ok := elem.Extra.Mores[MethodParameters].([]string); ok {
+					for _, p := range pts {
+						typePart := e.extractTypeFromParam(p)
+						rels = append(rels, &model.DependencyRelation{
+							Type:   model.Parameter,
+							Source: elem,
+							Target: e.quickResolve(e.clean(typePart), model.Class, gCtx, fCtx),
+							Mores:  map[string]interface{}{"tmp_raw": p},
+						})
+					}
+				}
+				if rt, ok := elem.Extra.Mores[MethodReturnType].(string); ok && rt != "void" && rt != "" {
+					rels = append(rels, &model.DependencyRelation{
+						Type:   model.Return,
+						Source: elem,
+						Target: e.quickResolve(e.clean(rt), model.Class, gCtx, fCtx),
+						Mores:  map[string]interface{}{"tmp_raw": rt},
+					})
+				}
+				if ths, ok := elem.Extra.Mores[MethodThrowsTypes].([]string); ok {
+					for _, ex := range ths {
+						rels = append(rels, &model.DependencyRelation{
+							Type:   model.Throw,
+							Source: elem,
+							Target: e.quickResolve(e.clean(ex), model.Class, gCtx, fCtx),
+							Mores:  map[string]interface{}{"tmp_raw": ex},
+						})
+					}
+				}
+			}
+
+			// --- 5. 处理变量泛型 (TypeArg) ---
+			for _, rt := range e.getRawTypesForTypeArgs(elem) {
+				rels = append(rels, e.collectAllTypeArgs(rt, elem, gCtx, fCtx)...)
+			}
+		}
+	}
+	return rels
+}
+
+func (e *Extractor) discoverActionRelations(fCtx *core.FileContext, gCtx *core.GlobalContext) ([]*model.DependencyRelation, error) {
+	tsLang, _ := core.GetLanguage(core.LangJava)
+	q, err := sitter.NewQuery(tsLang, JavaActionQuery)
+	if err != nil {
+		return nil, err
+	}
+	defer q.Close()
+
+	var rels []*model.DependencyRelation
+	qc := sitter.NewQueryCursor()
+	matches := qc.Matches(q, fCtx.RootNode, *fCtx.SourceBytes)
+
+	for {
+		match := matches.Next()
+		if match == nil {
+			break
+		}
+		capturedNode := &match.Captures[0].Node
+		sourceElem := e.determinePreciseSource(capturedNode, fCtx, gCtx)
+		if sourceElem == nil {
+			continue
+		}
+
+		for _, cap := range match.Captures {
+			capName := q.CaptureNames()[cap.Index]
+			if !strings.HasSuffix(capName, "_target") && capName != "update_stmt" &&
+				capName != "explicit_constructor_stmt" && capName != "id_atom" {
+				continue
+			}
+
+			// 1. 调用 mapAction 获取动作定义
+			actionTargets := e.mapAction(capName, &cap.Node, fCtx, gCtx)
+			for _, at := range actionTargets {
+				if at.RelType == "" || at.Target == nil {
+					continue
+				}
+
+				// 2. 这里的 at.Target 已经在 mapAction 中经过了过滤和 resolve
+				ctxNode := at.ContextNode
+				if ctxNode == nil {
+					ctxNode = at.TargetNode
+				}
+
+				rels = append(rels, &model.DependencyRelation{
+					Type:     at.RelType,
+					Source:   sourceElem,
+					Target:   at.Target, // 使用 mapAction resolve 好的对象
+					Location: e.toLoc(*at.TargetNode, fCtx.FilePath),
+					Mores: map[string]interface{}{
+						RelRawText: ctxNode.Utf8Text(*fCtx.SourceBytes),
+						"tmp_node": at.TargetNode,
+						"tmp_stmt": ctxNode,
+					},
+				})
+			}
+		}
+	}
+	return rels, nil
 }
 
 // =============================================================================
@@ -88,10 +274,6 @@ func (e *Extractor) enrichCoreMetadata(rel *model.DependencyRelation, fCtx *core
 		e.enrichAnnotationCore(rel)
 	}
 }
-
-// =============================================================================
-// 3. 核心增强函数 (Enrichment Cores)
-// =============================================================================
 
 func (e *Extractor) enrichCallCore(rel *model.DependencyRelation, node *sitter.Node, stmt *sitter.Node, src []byte) {
 	rel.Mores[RelCallIsStatic] = false
@@ -380,125 +562,7 @@ func (e *Extractor) enrichUseCore(rel *model.DependencyRelation, node, stmt *sit
 }
 
 // =============================================================================
-// 4. 发现逻辑 (Discovery Logic)
-// =============================================================================
-
-func (e *Extractor) extractStructural(fCtx *core.FileContext, gCtx *core.GlobalContext) []*model.DependencyRelation {
-	var rels []*model.DependencyRelation
-	for _, entries := range fCtx.DefinitionsBySN {
-		for _, entry := range entries {
-			elem := entry.Element
-			if elem.Extra == nil {
-				continue
-			}
-
-			if sc, ok := elem.Extra.Mores[ClassSuperClass].(string); ok && sc != "" {
-				rels = append(rels, &model.DependencyRelation{
-					Type: model.Extend, Source: elem, Target: e.quickResolve(e.clean(sc), model.Class, gCtx, fCtx),
-				})
-			}
-			for _, anno := range elem.Extra.Annotations {
-				cleanName := e.clean(anno)
-				rels = append(rels, &model.DependencyRelation{
-					Type: model.Annotation, Source: elem, Target: e.quickResolve(cleanName, model.KAnnotation, gCtx, fCtx),
-					Mores: map[string]interface{}{RelRawText: anno},
-				})
-			}
-			if elem.Kind == model.Method {
-				if pts, ok := elem.Extra.Mores[MethodParameters].([]string); ok {
-					for _, p := range pts {
-						typePart := e.extractTypeFromParam(p)
-						rels = append(rels, &model.DependencyRelation{
-							Type: model.Parameter, Source: elem, Target: e.quickResolve(e.clean(typePart), model.Class, gCtx, fCtx),
-							Mores: map[string]interface{}{"tmp_raw": p},
-						})
-					}
-				}
-				if rt, ok := elem.Extra.Mores[MethodReturnType].(string); ok && rt != "void" && rt != "" {
-					rels = append(rels, &model.DependencyRelation{
-						Type: model.Return, Source: elem, Target: e.quickResolve(e.clean(rt), model.Class, gCtx, fCtx),
-						Mores: map[string]interface{}{"tmp_raw": rt},
-					})
-				}
-				if ths, ok := elem.Extra.Mores[MethodThrowsTypes].([]string); ok {
-					for _, ex := range ths {
-						rels = append(rels, &model.DependencyRelation{
-							Type: model.Throw, Source: elem, Target: e.quickResolve(e.clean(ex), model.Class, gCtx, fCtx),
-							Mores: map[string]interface{}{"tmp_raw": ex},
-						})
-					}
-				}
-			}
-			for _, rt := range e.getRawTypesForTypeArgs(elem) {
-				rels = append(rels, e.collectAllTypeArgs(rt, elem, gCtx, fCtx)...)
-			}
-		}
-	}
-	return rels
-}
-
-func (e *Extractor) discoverActionRelations(fCtx *core.FileContext, gCtx *core.GlobalContext) ([]*model.DependencyRelation, error) {
-	tsLang, _ := core.GetLanguage(core.LangJava)
-	q, err := sitter.NewQuery(tsLang, JavaActionQuery)
-	if err != nil {
-		return nil, err
-	}
-	defer q.Close()
-
-	var rels []*model.DependencyRelation
-	qc := sitter.NewQueryCursor()
-	matches := qc.Matches(q, fCtx.RootNode, *fCtx.SourceBytes)
-
-	for {
-		match := matches.Next()
-		if match == nil {
-			break
-		}
-		capturedNode := &match.Captures[0].Node
-		sourceElem := e.determinePreciseSource(capturedNode, fCtx, gCtx)
-		if sourceElem == nil {
-			continue
-		}
-
-		for _, cap := range match.Captures {
-			capName := q.CaptureNames()[cap.Index]
-			if !strings.HasSuffix(capName, "_target") && capName != "update_stmt" &&
-				capName != "explicit_constructor_stmt" && capName != "id_atom" {
-				continue
-			}
-
-			// 1. 调用 mapAction 获取动作定义
-			actionTargets := e.mapAction(capName, &cap.Node, fCtx, gCtx)
-			for _, at := range actionTargets {
-				if at.RelType == "" || at.Target == nil {
-					continue
-				}
-
-				// 2. 这里的 at.Target 已经在 mapAction 中经过了过滤和 resolve
-				ctxNode := at.ContextNode
-				if ctxNode == nil {
-					ctxNode = at.TargetNode
-				}
-
-				rels = append(rels, &model.DependencyRelation{
-					Type:     at.RelType,
-					Source:   sourceElem,
-					Target:   at.Target, // 使用 mapAction resolve 好的对象
-					Location: e.toLoc(*at.TargetNode, fCtx.FilePath),
-					Mores: map[string]interface{}{
-						RelRawText: ctxNode.Utf8Text(*fCtx.SourceBytes),
-						"tmp_node": at.TargetNode,
-						"tmp_stmt": ctxNode,
-					},
-				})
-			}
-		}
-	}
-	return rels, nil
-}
-
-// =============================================================================
-// 5.  Capture关系发现（基于已提取到的ASSIGN和USE关系）
+// 3.  Capture关系发现（基于已提取到的ASSIGN和USE关系）
 // =============================================================================
 
 func (e *Extractor) genCaptureRelations(deps []*model.DependencyRelation) []*model.DependencyRelation {
@@ -544,16 +608,15 @@ func (e *Extractor) genCaptureRelations(deps []*model.DependencyRelation) []*mod
 			}
 		}
 	}
-	return append(deps, captures...)
+	return captures
 }
 
 // =============================================================================
-// 6. 辅助工具 (Helper Utilities)
+// 4. 辅助工具 (Helper Utilities)
 // =============================================================================
 
 type ActionTarget struct {
 	RelType     model.DependencyType
-	Kind        model.ElementKind
 	TargetNode  *sitter.Node
 	ContextNode *sitter.Node
 	Target      *model.CodeElement
@@ -563,94 +626,88 @@ func (e *Extractor) mapAction(capName string, node *sitter.Node, fCtx *core.File
 	src := *fCtx.SourceBytes
 	text := node.Utf8Text(src)
 
-	res := func(symbol string, kind model.ElementKind) *model.CodeElement {
-		return e.quickResolve(e.clean(symbol), kind, gCtx, fCtx)
+	// element 匹配
+	resolve := func(symbol string, kind model.ElementKind) *model.CodeElement {
+		cleanSymbol := e.clean(symbol)
+		switch kind {
+		case model.Method:
+			return e.quickResolve(cleanSymbol, kind, gCtx, fCtx)
+		case model.Field, model.Variable:
+			return e.quickResolveVariable(cleanSymbol, node, fCtx)
+		default:
+			return e.quickResolve(cleanSymbol, kind, gCtx, fCtx)
+		}
 	}
 
 	switch capName {
 	case "call_target", "ref_target":
 		ctx := e.findNearestKind(node, "method_invocation", "method_reference", "explicit_constructor_invocation", "object_creation_expression")
-		return []ActionTarget{{model.Call, model.Method, node, ctx, res(text, model.Method)}}
+		return []ActionTarget{{model.Call, node, ctx, resolve(text, model.Method)}}
 
 	case "create_target":
 		ctx := e.findNearestKind(node, "object_creation_expression", "array_creation_expression")
 		return []ActionTarget{
-			{model.Create, model.Class, node, ctx, res(text, model.Class)},
-			{model.Call, model.Method, node, ctx, res(text, model.Method)},
+			{model.Create, node, ctx, resolve(text, model.Class)},
+			{model.Call, node, ctx, resolve(text, model.Method)},
 		}
 
 	case "cast_target":
-		// 处理显式强转和 instanceOf
 		ctx := e.findNearestKind(node, "cast_expression", "instanceof_expression")
-		return []ActionTarget{{model.Cast, model.Class, node, ctx, res(text, model.Class)}}
+		return []ActionTarget{{model.Cast, node, ctx, resolve(text, model.Class)}}
 
 	case "assign_target", "update_stmt":
 		ctx := e.findNearestKind(node, "assignment_expression", "variable_declarator", "update_expression")
-		return []ActionTarget{{model.Assign, model.Variable, node, ctx, res(text, model.Variable)}}
+		return []ActionTarget{{model.Assign, node, ctx, resolve(text, model.Variable)}}
 
 	case "id_atom":
-		parent := node.Parent()
-		if parent == nil {
-			return nil
-		}
-		pk := parent.Kind()
-
-		if (pk == "variable_declarator" || pk == "formal_parameter") &&
-			parent.ChildByFieldName("name") != nil &&
-			parent.ChildByFieldName("name").Id() == node.Id() {
-			return nil
-		}
-		if (pk == "method_invocation" || pk == "method_reference") &&
-			parent.ChildByFieldName("name") != nil && parent.ChildByFieldName("name").Id() == node.Id() {
+		target := resolve(text, model.Variable)
+		if !e.isUseRel(node, target) {
 			return nil
 		}
 
-		var contextNode *sitter.Node
-		curr := node.Parent()
-		for curr != nil {
-			kind := curr.Kind()
-			if kind == "binary_expression" ||
-				kind == "array_access" ||
-				kind == "cast_expression" ||
-				kind == "enhanced_for_statement" ||
-				kind == "field_access" ||
-				kind == "lambda_expression" ||
-				kind == "assignment_expression" {
-				contextNode = curr
-				break
-			}
-			if strings.HasSuffix(kind, "_statement") || kind == "method_declaration" {
-				break
-			}
-			curr = curr.Parent()
-		}
-
-		target := res(text, model.Variable)
-		if target == nil || target.IsFormExternal {
-			return nil
-		}
-		if target.Kind == model.Class || target.Kind == model.Interface {
-			return nil
-		}
-		sourceElem := e.determinePreciseSource(node, fCtx, gCtx)
-		if sourceElem != nil && sourceElem.QualifiedName == target.QualifiedName {
-			return nil
-		}
-
-		return []ActionTarget{{model.Use, model.Variable, node, contextNode, target}}
+		ctx := e.findNearestKind(node, "binary_expression", "array_access", "cast_expression", "enhanced_for_statement", "field_access", "lambda_expression", "assignment_expression")
+		return []ActionTarget{{model.Use, node, ctx, resolve(text, model.Variable)}}
 
 	case "throw_target":
-		return []ActionTarget{{model.Throw, model.Class, node, e.findThrowStatement(node), res(text, model.Class)}}
+		ctx := e.findNearestKind(node, "throw_statement")
+		return []ActionTarget{{model.Throw, node, ctx, resolve(text, model.Class)}}
 
 	case "explicit_constructor_stmt":
 		return []ActionTarget{
-			{model.Call, model.Method, node, node, res(text, model.Method)},
-			{model.Create, model.Class, node, node, res(text, model.Class)},
+			{model.Call, node, node, resolve(text, model.Method)},
+			{model.Create, node, node, resolve(text, model.Class)},
 		}
 
 	default:
 		return nil
 	}
+}
+
+func (e *Extractor) isUseRel(node *sitter.Node, target *model.CodeElement) bool {
+	// 1. 快速定位符号：如果不是变量或字段，直接 pass
+	if target == nil || (target.Kind != model.Variable && target.Kind != model.Field) {
+		return false
+	}
+
+	// 2. 排除定义点：通过父节点的 FieldName 判断
+	// 如果当前 identifier 是其父节点的 "name" 字段，说明它是声明，不是使用
+	parent := node.Parent()
+	if parent.ChildByFieldName("name") != nil && parent.ChildByFieldName("name").Id() == node.Id() {
+		return false
+	}
+
+	// 3. 排除特定语法噪声
+	switch parent.Kind() {
+	case "method_invocation", "method_reference":
+		// 如果是方法调用/引用的名称部分，由 call_target 处理
+		if nameNode := parent.ChildByFieldName("name"); nameNode != nil && nameNode.Id() == node.Id() {
+			return false
+		}
+	case "scoped_identifier", "package_declaration", "import_declaration":
+		return false
+	}
+
+	return true
 }
 
 func (e *Extractor) clean(s string) string {
@@ -741,18 +798,6 @@ func (e *Extractor) determinePreciseSource(n *sitter.Node, fCtx *core.FileContex
 	return nil
 }
 
-func (e *Extractor) findThrowStatement(n *sitter.Node) *sitter.Node {
-	for curr := n; curr != nil; curr = curr.Parent() {
-		if curr.Kind() == "throw_statement" {
-			return curr
-		}
-		if curr.Kind() == "method_declaration" || curr.Kind() == "class_body" {
-			break
-		}
-	}
-	return nil
-}
-
 func (e *Extractor) findNearestKind(n *sitter.Node, kinds ...string) *sitter.Node {
 	for curr := n; curr != nil; curr = curr.Parent() {
 		for _, k := range kinds {
@@ -781,6 +826,51 @@ func (e *Extractor) quickResolve(symbol string, kind model.ElementKind, gCtx *co
 		Kind:           kind,
 		IsFormExternal: true,
 	}
+}
+
+func (e *Extractor) quickResolveVariable(name string, node *sitter.Node, fCtx *core.FileContext) *model.CodeElement {
+	cleanName := e.clean(name)
+	line := int(node.StartPosition().Row + 1)
+
+	// 1. 获取该短名字对应的所有定义项
+	entries, ok := fCtx.DefinitionsBySN[cleanName]
+	if !ok {
+		return nil
+	}
+
+	var bestMatch *core.DefinitionEntry
+	minDist := 999999
+
+	for _, entry := range entries {
+		// 2. 作用域初步过滤：
+		// 如果是局部变量或参数，其行号必须在引用点之前（Java 不支持向前引用变量）
+		if entry.Element.Kind == model.Variable {
+			defLine := entry.Element.Location.StartLine
+			if defLine <= line {
+				dist := line - defLine
+				if dist < minDist {
+					minDist = dist
+					bestMatch = entry
+				}
+			}
+			continue
+		}
+
+		// 3. 如果是 Field，只要在同一个类或父类中即可（简单处理先看同文件）
+		if entry.Element.Kind == model.Field {
+			// Field 的优先级通常低于局部变量，如果没有找到局部变量，则暂存
+			if bestMatch == nil {
+				bestMatch = entry
+			}
+		}
+
+		// 注意：这里不处理 Class/Method，因为我们的目标是过滤 Variable/Field
+	}
+
+	if bestMatch != nil {
+		return bestMatch.Element
+	}
+	return nil
 }
 
 func (e *Extractor) toLoc(n sitter.Node, path string) *model.Location {
@@ -813,28 +903,6 @@ func (e *Extractor) mapElementKindToAnnotationTarget(elem *model.CodeElement) st
 		return "LOCAL_VARIABLE"
 	}
 	return "UNKNOWN"
-}
-
-func (e *Extractor) extractHierarchy(fCtx *core.FileContext, gCtx *core.GlobalContext) []*model.DependencyRelation {
-	var rels []*model.DependencyRelation
-	fileSource := gCtx.DefinitionsByQN[fCtx.FilePath][0].Element
-	for _, imports := range fCtx.Imports {
-		for _, imp := range imports {
-			rels = append(rels, &model.DependencyRelation{
-				Type: model.Import, Source: fileSource, Target: e.quickResolve(imp.RawImportPath, imp.Kind, gCtx, fCtx), Location: imp.Location,
-			})
-		}
-	}
-	for _, entries := range fCtx.DefinitionsBySN {
-		for _, entry := range entries {
-			if entry.ParentQN != "" {
-				if parents := gCtx.DefinitionsByQN[entry.ParentQN]; len(parents) > 0 {
-					rels = append(rels, &model.DependencyRelation{Type: model.Contain, Source: parents[0].Element, Target: entry.Element})
-				}
-			}
-		}
-	}
-	return rels
 }
 
 func (e *Extractor) parseTypeArgs(rawType string) []string {

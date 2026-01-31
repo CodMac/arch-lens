@@ -618,7 +618,7 @@ func TestJavaCollector_Annotation(t *testing.T) {
 	filePath := getTestFilePath(filepath.Join("com", "example", "base", "annotation", "Loggable.java"))
 
 	// 2. 解析源码与运行 Collector
-	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, true, false)
+	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, false, false)
 	if err != nil {
 		t.Fatalf("Failed to parse file: %v", err)
 	}
@@ -1601,7 +1601,7 @@ func TestJavaCollector_ParameterScope(t *testing.T) {
 func TestJavaCollector_ScopeAndShadowing(t *testing.T) {
 	// 1. 初始化解析环境
 	filePath := getTestFilePath(filepath.Join("com", "example", "base", "test", "ScopeTest.java"))
-	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, false, true)
+	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, true, true)
 	if err != nil {
 		t.Fatalf("Failed to parse file: %v", err)
 	}
@@ -1652,13 +1652,31 @@ func TestJavaCollector_ScopeAndShadowing(t *testing.T) {
 		if len(findDefinitionsByQN(fCtx, lambdaVarQN)) == 0 {
 			t.Errorf("Variable x not found inside Lambda block scope")
 		}
+
+		// QN: com.example.base.ScopeTest.test().lambda$1.a
+		lambdaVarA := "com.example.base.ScopeTest.test().lambda$1.a"
+		if len(findDefinitionsByQN(fCtx, lambdaVarA)) == 0 {
+			t.Errorf("Variable a not found inside Lambda block scope")
+		}
+
+		// QN: com.example.base.ScopeTest.test().lambda$1.b
+		lambdaVarB := "com.example.base.ScopeTest.test().lambda$1.b"
+		if len(findDefinitionsByQN(fCtx, lambdaVarB)) == 0 {
+			t.Errorf("Variable b not found inside Lambda block scope")
+		}
+
+		// QN: com.example.base.ScopeTest.test().lambda$1.c
+		lambdaVarC := "com.example.base.ScopeTest.test().lambda$1.c"
+		if len(findDefinitionsByQN(fCtx, lambdaVarC)) == 0 {
+			t.Errorf("Variable c not found inside Lambda block scope")
+		}
 	})
 }
 
 func TestJavaCollector_ScopeVariable(t *testing.T) {
 	// 1. 初始化解析环境
 	filePath := getTestFilePath(filepath.Join("com", "example", "base", "test", "ScopeVariableTest.java"))
-	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, true, true)
+	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, false, true)
 	if err != nil {
 		t.Fatalf("Failed to parse file: %v", err)
 	}
@@ -1864,7 +1882,7 @@ func TestJavaCollector_TryWithResources(t *testing.T) {
 	// 1. 初始化解析环境
 	// 假设文件路径为 com/example/sugar/TryWithResourcesTest.java
 	filePath := getTestFilePath(filepath.Join("com", "example", "sugar", "TryWithResourcesTest.java"))
-	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, true, true)
+	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, false, true)
 	if err != nil {
 		t.Fatalf("Failed to parse file: %v", err)
 	}
