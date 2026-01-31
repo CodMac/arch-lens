@@ -16,5 +16,20 @@ public class ScopeTest {
 
             int a, b, c = 5;
         };
+
+        // 多参数无类型 (a, b) -> ...
+        BinaryOperator<Integer> add = (p1, p2) -> {
+            int sum = p1 + p2;
+            return sum;
+        };
+
+        // 多参数带类型 (int x, int y) -> ...
+        BinaryOperator<Integer> sub = (int v1, int v2) -> v1 - v2;
+
+        // 单参数无括号 (之前已有类似，此处对比)
+        java.util.function.Consumer<String> printer = s -> {
+            String prefix = "LOG: ";
+            System.out.println(prefix + s);
+        };
     }
 }

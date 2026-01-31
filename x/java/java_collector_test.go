@@ -1671,6 +1671,27 @@ func TestJavaCollector_ScopeAndShadowing(t *testing.T) {
 			t.Errorf("Variable c not found inside Lambda block scope")
 		}
 	})
+
+	// 5. 验证 Lambda 多参数识别
+	t.Run("Verify Lambda Multi-Parameters", func(t *testing.T) {
+		// 情况 A: (p1, p2) -> ...
+		// 注意：在你的 identifyLambdaParameter 逻辑中，这些会被识别为 Variable
+		params := []string{"p1", "p2", "v1", "v2"}
+		for _, p := range params {
+			// 根据你的 QN 生成逻辑，这些参数属于对应的 lambda$n
+			// 需要通过 printCodeElements 确认具体的 lambda 序号，这里假设是 lambda$2 和 lambda$3
+			found := false
+			for _, entry := range fCtx.DefinitionsBySN[p] {
+				if strings.Contains(entry.Element.QualifiedName, "lambda") {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("Lambda parameter %s not found in any lambda scope", p)
+			}
+		}
+	})
 }
 
 func TestJavaCollector_ScopeVariable(t *testing.T) {
