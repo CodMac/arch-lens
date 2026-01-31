@@ -40,6 +40,7 @@ func printCodeElements(fCtx *core.FileContext) {
 	for _, defs := range fCtx.DefinitionsBySN {
 		for _, def := range defs {
 			fmt.Printf("Short: %s -> Kind: %s, QN: %s\n", def.Element.Name, def.Element.Kind, def.Element.QualifiedName)
+			fmt.Printf("      -> Extra: %v\n", def.Element.Extra.Mores)
 		}
 	}
 }
@@ -1601,7 +1602,7 @@ func TestJavaCollector_ParameterScope(t *testing.T) {
 func TestJavaCollector_ScopeAndShadowing(t *testing.T) {
 	// 1. 初始化解析环境
 	filePath := getTestFilePath(filepath.Join("com", "example", "base", "test", "ScopeTest.java"))
-	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, true, true)
+	rootNode, sourceBytes, err := getJavaParser(t).ParseFile(filePath, false, true)
 	if err != nil {
 		t.Fatalf("Failed to parse file: %v", err)
 	}
