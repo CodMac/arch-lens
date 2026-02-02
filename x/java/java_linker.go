@@ -42,16 +42,15 @@ func (l *Linker) LinkHierarchy(gc *core.GlobalContext) []*model.DependencyRelati
 
 		// --- 2. 处理 File -> TopLevelElements ---
 		// 遍历该文件中的所有定义
-		for _, entries := range fCtx.DefinitionsBySN {
-			for _, entry := range entries {
-				// 逻辑：只有当一个元素的父级是包（或者是空的顶级元素）时，它才直接挂在文件节点下
-				// 这样可以避免方法、内部类也平铺在文件下
-				isTopLevel := entry.ParentQN == "" || entry.ParentQN == fCtx.PackageName
+		for _, entry := range fCtx.Definitions {
+			// 逻辑：只有当一个元素的父级是包（或者是空的顶级元素）时，它才直接挂在文件节点下
+			// 这样可以避免方法、内部类也平铺在文件下
+			isTopLevel := entry.ParentQN == "" || entry.ParentQN == fCtx.PackageName
 
-				if isTopLevel {
-					l.addRel(relMap, model.File, fCtx.FilePath, entry.Element.Kind, entry.Element.QualifiedName)
-				}
+			if isTopLevel {
+				l.addRel(relMap, model.File, fCtx.FilePath, entry.Element.Kind, entry.Element.QualifiedName)
 			}
+
 		}
 	}
 
