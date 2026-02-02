@@ -91,48 +91,46 @@ func (c *Collector) collectBasicDefinitions(node *sitter.Node, fCtx *core.FileCo
 
 func (c *Collector) refineVariableScopes(fCtx *core.FileContext) {
 	// 获取所有已注册的 block，用于后续比对
-	blocks := fCtx.DefinitionsBySN["block"]
+	blocks, _ := fCtx.FindByShortName("block")
 	if len(blocks) == 0 {
 		return
 	}
 
-	for _, entries := range fCtx.DefinitionsBySN {
-		for _, entry := range entries {
-			// 仅针对变量进行作用域修正
-			if entry.Element.Kind != model.Variable {
-				continue
-			}
-
-			// 1. 向上寻找最近的逻辑容器 (try/for/if/catch)
-			containerNode := c.findNearestBlockParent(entry.Node)
-			if containerNode == nil {
-				continue
-			}
-
-			// 2. 遍历容器的子节点，寻找该变量逻辑上所属的 block 节点
-			for i := 0; i < int(containerNode.ChildCount()); i++ {
-				child := containerNode.Child(uint(i))
-				// 只有当子节点是 block，且不是变量自身的定义节点时才处理
-				if child.Kind() != "block" {
-					continue
-				}
-
-				// 3. 在已采集的定义中，通过 Location 匹配找到对应的 block 实体
-				for _, bDef := range blocks {
-					if c.matchLocation(child, bDef.Element) {
-						newParentQN := bDef.Element.QualifiedName
-
-						// 4. 更新 ParentQN 并重新构建 QualifiedName
-						entry.ParentQN = newParentQN
-						entry.Element.QualifiedName = c.resolver.BuildQualifiedName(newParentQN, entry.Element.Name)
-
-						// 一旦找到匹配的 block 并完成重定位，即可跳出当前变量的查找
-						goto nextVariable
-					}
-				}
-			}
-		nextVariable:
+	for _, entry := range fCtx.Definitions {
+		// 仅针对变量进行作用域修正
+		if entry.Element.Kind != model.Variable {
+			continue
 		}
+
+		// 1. 向上寻找最近的逻辑容器 (try/for/if/catch)
+		containerNode := c.findNearestBlockParent(entry.Node)
+		if containerNode == nil {
+			continue
+		}
+
+		// 2. 遍历容器的子节点，寻找该变量逻辑上所属的 block 节点
+		for i := 0; i < int(containerNode.ChildCount()); i++ {
+			child := containerNode.Child(uint(i))
+			// 只有当子节点是 block，且不是变量自身的定义节点时才处理
+			if child.Kind() != "block" {
+				continue
+			}
+
+			// 3. 在已采集的定义中，通过 Location 匹配找到对应的 block 实体
+			for _, bDef := range blocks {
+				if c.matchLocation(child, bDef.Element) {
+					newParentQN := bDef.Element.QualifiedName
+
+					// 4. 更新 ParentQN 并重新构建 QualifiedName
+					entry.ParentQN = newParentQN
+					entry.Element.QualifiedName = c.resolver.BuildQualifiedName(newParentQN, entry.Element.Name)
+
+					// 一旦找到匹配的 block 并完成重定位，即可跳出当前变量的查找
+					goto nextVariable
+				}
+			}
+		}
+	nextVariable:
 	}
 }
 
@@ -261,10 +259,8 @@ func (c *Collector) identifyBlockType(node *sitter.Node) (model.ElementKind, []s
 // =============================================================================
 
 func (c *Collector) enrichMetadata(fCtx *core.FileContext) {
-	for _, entries := range fCtx.DefinitionsBySN {
-		for _, entry := range entries {
-			c.processMetadataForEntry(entry, fCtx)
-		}
+	for _, entry := range fCtx.Definitions {
+		c.processMetadataForEntry(entry, fCtx)
 	}
 }
 
@@ -510,22 +506,22 @@ func (c *Collector) fillAnonymousClassMetadata(elem *model.CodeElement, node *si
 // =============================================================================
 
 func (c *Collector) applySyntacticSugar(fCtx *core.FileContext) {
-	var allEntries []*core.DefinitionEntry
-	for _, entries := range fCtx.DefinitionsBySN {
-		allEntries = append(allEntries, entries...)
-	}
-
-	for _, entry := range allEntries {
-		elem, node := entry.Element, entry.Node
-		switch elem.Kind {
-		case model.Class:
+	clazz, ok := fCtx.FindByElementKind(model.Class)
+	if ok {
+		for _, entry := range clazz {
+			elem, node := entry.Element, entry.Node
 			if node.Kind() == "record_declaration" {
 				c.desugarRecordMembers(elem, node, fCtx)
 			} else if node.Kind() == "class_declaration" {
 				c.desugarDefaultConstructor(elem, node, fCtx)
 			}
-		case model.Enum:
-			c.desugarEnumMethods(elem, node, fCtx)
+		}
+	}
+
+	enums, ok := fCtx.FindByElementKind(model.Enum)
+	if ok {
+		for _, entry := range enums {
+			c.desugarEnumMethods(entry.Element, entry.Node, fCtx)
 		}
 	}
 }
@@ -596,7 +592,7 @@ func (c *Collector) desugarRecordMembers(elem *model.CodeElement, node *sitter.N
 	for _, comp := range comps {
 		// Update Fields
 		fieldQN := c.resolver.BuildQualifiedName(elem.QualifiedName, comp.name)
-		if defs := fCtx.DefinitionsBySN[comp.name]; len(defs) > 0 {
+		if defs, _ := fCtx.FindByShortName(comp.name); len(defs) > 0 {
 			for _, d := range defs {
 				if d.Element.QualifiedName == fieldQN {
 					d.Element.Kind = model.Field
@@ -903,11 +899,9 @@ func (c *Collector) extractInterfaceListFromNode(node *sitter.Node, src *[]byte)
 
 func (c *Collector) findDefinitionsByQN(fCtx *core.FileContext, qn string) []*core.DefinitionEntry {
 	var result []*core.DefinitionEntry
-	for _, entries := range fCtx.DefinitionsBySN {
-		for _, entry := range entries {
-			if entry.Element.QualifiedName == qn {
-				result = append(result, entry)
-			}
+	for _, entry := range fCtx.Definitions {
+		if entry.Element.QualifiedName == qn {
+			result = append(result, entry)
 		}
 	}
 	return result

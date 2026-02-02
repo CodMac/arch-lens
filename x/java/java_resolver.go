@@ -26,10 +26,11 @@ func (j *SymbolResolver) RegisterPackage(gc *core.GlobalContext, packageName str
 	for _, part := range parts {
 		current = append(current, part)
 		pkgQN := strings.Join(current, ".")
-		if _, ok := gc.DefinitionsByQN[pkgQN]; !ok {
-			gc.DefinitionsByQN[pkgQN] = []*core.DefinitionEntry{{
+		if _, ok := gc.FindByQualifiedName(pkgQN); !ok {
+			entry := core.DefinitionEntry{
 				Element: &model.CodeElement{Kind: model.Package, Name: part, QualifiedName: pkgQN, IsFormSource: true},
-			}}
+			}
+			gc.AddDefinition(&entry)
 		}
 	}
 }
@@ -39,7 +40,7 @@ func (j *SymbolResolver) Resolve(gc *core.GlobalContext, fc *core.FileContext, s
 	defer gc.RUnlock()
 
 	// 1. 局部定义
-	if defs, ok := fc.DefinitionsBySN[symbol]; ok {
+	if defs, ok := fc.FindByShortName(symbol); ok {
 		return defs
 	}
 
@@ -47,8 +48,8 @@ func (j *SymbolResolver) Resolve(gc *core.GlobalContext, fc *core.FileContext, s
 	if imps, ok := fc.Imports[symbol]; ok {
 		for _, imp := range imps {
 			// 仅import的源码符号才有可能在上下文中被发现，外部导入直接返回nil
-			if defs, found := gc.DefinitionsByQN[imp.RawImportPath]; found {
-				return defs
+			if def, found := gc.FindByQualifiedName(imp.RawImportPath); found {
+				return []*core.DefinitionEntry{def}
 			} else {
 				return nil
 			}
@@ -57,8 +58,8 @@ func (j *SymbolResolver) Resolve(gc *core.GlobalContext, fc *core.FileContext, s
 
 	// 3. 同包前缀
 	pkgQN := j.BuildQualifiedName(fc.PackageName, symbol)
-	if defs, ok := gc.DefinitionsByQN[pkgQN]; ok {
-		return defs
+	if def, ok := gc.FindByQualifiedName(pkgQN); ok {
+		return []*core.DefinitionEntry{def}
 	}
 
 	// 4. Java 特有的通配符导入
@@ -66,16 +67,16 @@ func (j *SymbolResolver) Resolve(gc *core.GlobalContext, fc *core.FileContext, s
 		for _, imp := range imps {
 			if imp.IsWildcard {
 				basePath := strings.TrimSuffix(imp.RawImportPath, "*")
-				if defs, ok := gc.DefinitionsByQN[basePath+symbol]; ok {
-					return defs
+				if def, ok := gc.FindByQualifiedName(basePath + symbol); ok {
+					return []*core.DefinitionEntry{def}
 				}
 			}
 		}
 	}
 
-	// 5. 兜底：直接按 QN 查找 (处理代码中使用全限定名调用的情况)
-	if defs, ok := gc.DefinitionsByQN[symbol]; ok {
-		return defs
+	// 5. 直接按 QN 查找 (处理代码中使用全限定名调用的情况)
+	if def, ok := gc.FindByQualifiedName(symbol); ok {
+		return []*core.DefinitionEntry{def}
 	}
 
 	return nil
