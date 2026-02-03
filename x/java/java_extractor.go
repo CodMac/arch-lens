@@ -9,9 +9,20 @@ import (
 	sitter "github.com/tree-sitter/go-tree-sitter"
 )
 
-type Extractor struct{}
+type Extractor struct {
+	resolver core.SymbolResolver
+}
 
-func NewJavaExtractor() *Extractor { return &Extractor{} }
+func NewJavaExtractor() *Extractor {
+	resolver, err := core.GetSymbolResolver(core.LangJava)
+	if err != nil {
+		panic(err)
+	}
+
+	return &Extractor{
+		resolver: resolver,
+	}
+}
 
 // =============================================================================
 // 主流水线 (Main Pipeline)
@@ -904,7 +915,7 @@ func (e *Extractor) collectAllTypeArgs(rt string, source *model.CodeElement, gCt
 
 func (e *Extractor) quickResolveStruct(symbol string, kind model.ElementKind, gCtx *core.GlobalContext, fCtx *core.FileContext) *model.CodeElement {
 	// 结构对象，直接返回第一个
-	if entries := gCtx.ResolveSymbol(fCtx, symbol); len(entries) > 0 {
+	if entries := e.resolver.Resolve(gCtx, fCtx, symbol); len(entries) > 0 {
 		return entries[0].Element
 	}
 
@@ -979,7 +990,7 @@ func (e *Extractor) quickResolveMethod(symbol string, node *sitter.Node, gCtx *c
 
 	// 2. 尝试从 GlobalContext 解析符号
 	// gCtx.ResolveSymbol 会根据 Import 和当前 Package 返回可能的定义列表
-	entries := gCtx.ResolveSymbol(fCtx, symbol)
+	entries := e.resolver.Resolve(gCtx, fCtx, symbol)
 	if len(entries) > 0 {
 		// 策略 A: 匹配重载
 		var bestMatch *core.DefinitionEntry

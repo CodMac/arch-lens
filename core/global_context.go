@@ -52,11 +52,6 @@ func (gc *GlobalContext) RegisterFileContext(fc *FileContext) {
 	}
 }
 
-// ResolveSymbol 彻底由 Resolver 驱动
-func (gc *GlobalContext) ResolveSymbol(fc *FileContext, symbol string) []*DefinitionEntry {
-	return gc.resolver.Resolve(gc, fc, symbol)
-}
-
 func (gc *GlobalContext) AddDefinition(def *DefinitionEntry) {
 	defQN := def.Element.QualifiedName
 

@@ -50,7 +50,6 @@ func (l *Linker) LinkHierarchy(gc *core.GlobalContext) []*model.DependencyRelati
 			if isTopLevel {
 				l.addRel(relMap, model.File, fCtx.FilePath, entry.Element.Kind, entry.Element.QualifiedName)
 			}
-
 		}
 	}
 
