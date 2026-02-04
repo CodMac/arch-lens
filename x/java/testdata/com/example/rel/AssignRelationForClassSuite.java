@@ -48,6 +48,7 @@ public class AssignRelationForClassSuite {
         // }
         DataNode data = new DataNode();
         data.name = "Hello";
+        String dataName =  data.name;
 
         // 4. 方法返回结果赋值
         // Source: com.example.rel.AssignRelationForClassSuite.testClassAssignments() (METHOD)
