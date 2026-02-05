@@ -121,7 +121,7 @@ func TestJavaCollector_AbstractBaseEntity(t *testing.T) {
 			t.Errorf("Expected Field, got %s", elem.Kind)
 		}
 
-		if tpe := elem.Extra.Mores[java.FieldType]; tpe != "ID" {
+		if tpe := elem.Extra.Mores[java.FieldRawType]; tpe != "ID" {
 			t.Errorf("Expected type ID, got %v", tpe)
 		}
 
@@ -139,7 +139,7 @@ func TestJavaCollector_AbstractBaseEntity(t *testing.T) {
 		}
 
 		elem := defs[0].Element
-		if tpe := elem.Extra.Mores[java.FieldType]; tpe != "Date" {
+		if tpe := elem.Extra.Mores[java.FieldRawType]; tpe != "Date" {
 			t.Errorf("Expected type Date, got %v", tpe)
 		}
 
@@ -158,7 +158,7 @@ func TestJavaCollector_AbstractBaseEntity(t *testing.T) {
 		}
 
 		getElem := getDefs[0].Element
-		if ret := getElem.Extra.Mores[java.MethodReturnType]; ret != "ID" {
+		if ret := getElem.Extra.Mores[java.MethodReturnRawType]; ret != "ID" {
 			t.Errorf("getId expected return ID, got %v", ret)
 		}
 
@@ -170,7 +170,7 @@ func TestJavaCollector_AbstractBaseEntity(t *testing.T) {
 		}
 
 		setElem := setDefs[0].Element
-		if ret := setElem.Extra.Mores[java.MethodReturnType]; ret != "void" {
+		if ret := setElem.Extra.Mores[java.MethodReturnRawType]; ret != "void" {
 			t.Errorf("setId expected return void, got %v", ret)
 		}
 	})
@@ -196,7 +196,7 @@ func TestJavaCollector_AbstractBaseEntity(t *testing.T) {
 		}
 
 		fieldElem := fieldDefs[0].Element
-		if tpe := fieldElem.Extra.Mores[java.FieldType]; tpe != "String" {
+		if tpe := fieldElem.Extra.Mores[java.FieldRawType]; tpe != "String" {
 			t.Errorf("tableName expected String, got %v", tpe)
 		}
 	})
@@ -352,7 +352,7 @@ func TestJavaCollector_CallbackManager(t *testing.T) {
 		}
 
 		elem := defs[0].Element
-		if tpe := elem.Extra.Mores[java.VariableType]; tpe != "Runnable" {
+		if tpe := elem.Extra.Mores[java.VariableRawType]; tpe != "Runnable" {
 			t.Errorf("Expected type Runnable, got %v", tpe)
 		}
 	})
@@ -470,7 +470,7 @@ func TestJavaCollector_ConfigService(t *testing.T) {
 		}
 
 		vElem := vDefs[0].Element
-		if tpe := vElem.Extra.Mores[java.VariableType]; tpe != "Object..." {
+		if tpe := vElem.Extra.Mores[java.VariableRawType]; tpe != "Object..." {
 			t.Errorf("Expected type Object..., got %v", tpe)
 		}
 	})
@@ -789,7 +789,7 @@ func TestJavaCollector_EnumErrorCode(t *testing.T) {
 		}
 	})
 
-	// 4. 验证成员方法及其返回值类型 (使用 java.MethodReturnType)
+	// 4. 验证成员方法及其返回值类型 (使用 java.MethodReturnRawType)
 	t.Run("Verify Enum Member Methods", func(t *testing.T) {
 		qn := "com.example.base.enum.ErrorCode.getMessage()"
 		defs := findDefinitionsByQN(fCtx, qn)
@@ -798,7 +798,7 @@ func TestJavaCollector_EnumErrorCode(t *testing.T) {
 		}
 
 		elem := defs[0].Element
-		retType, ok := elem.Extra.Mores[java.MethodReturnType].(string)
+		retType, ok := elem.Extra.Mores[java.MethodReturnRawType].(string)
 		if !ok || retType != "String" {
 			t.Errorf("Expected return type String, got %v", retType)
 		}
@@ -855,7 +855,7 @@ func TestJavaCollector_NotificationException(t *testing.T) {
 			t.Error("serialVersionUID should be identified as a constant")
 		}
 
-		fieldType := elem.Extra.Mores[java.FieldType].(string)
+		fieldType := elem.Extra.Mores[java.FieldRawType].(string)
 		if fieldType != "long" {
 			t.Errorf("Expected type long, got %s", fieldType)
 		}
@@ -936,7 +936,7 @@ func TestJavaCollector_User(t *testing.T) {
 		if isConst, _ := elem.Extra.Mores[java.FieldIsConstant].(bool); !isConst {
 			t.Error("DEFAULT_ID should be identified as a Constant (static + final)")
 		}
-		if fType := elem.Extra.Mores[java.FieldType].(string); fType != "String" {
+		if fType := elem.Extra.Mores[java.FieldRawType].(string); fType != "String" {
 			t.Errorf("Expected field type String, got %s", fType)
 		}
 	})
@@ -1047,7 +1047,7 @@ func TestJavaCollector_UserServiceImpl(t *testing.T) {
 		elem := defs[0].Element
 
 		// 验证泛型返回值
-		if ret := elem.Extra.Mores[java.MethodReturnType].(string); ret != "List<AbstractBaseEntity<String>>" {
+		if ret := elem.Extra.Mores[java.MethodReturnRawType].(string); ret != "List<AbstractBaseEntity<String>>" {
 			t.Errorf("Expected return type List<AbstractBaseEntity<String>>, got %s", ret)
 		}
 
@@ -1076,7 +1076,7 @@ func TestJavaCollector_UserServiceImpl(t *testing.T) {
 		if len(rDefs) == 0 {
 			t.Errorf("Local variable 'results' not found with QN: %s", resultsQN)
 		} else {
-			vType := rDefs[0].Element.Extra.Mores[java.VariableType].(string)
+			vType := rDefs[0].Element.Extra.Mores[java.VariableRawType].(string)
 			if vType != "List<AbstractBaseEntity<String>>" {
 				t.Errorf("Incorrect type for results: %s", vType)
 			}
@@ -1088,7 +1088,7 @@ func TestJavaCollector_UserServiceImpl(t *testing.T) {
 		if len(cDefs) == 0 {
 			t.Errorf("Local variable 'converted' not found")
 		} else {
-			vType := cDefs[0].Element.Extra.Mores[java.VariableType].(string)
+			vType := cDefs[0].Element.Extra.Mores[java.VariableRawType].(string)
 			if vType != "String" {
 				t.Errorf("Expected type String for 'converted', got %s", vType)
 			}
@@ -1336,8 +1336,8 @@ func TestJavaCollector_GenericComplex(t *testing.T) {
 		}
 		elem := defs[0].Element
 
-		// 验证返回值 (MethodReturnType)
-		retType, _ := elem.Extra.Mores[java.MethodReturnType].(string)
+		// 验证返回值 (MethodReturnRawType)
+		retType, _ := elem.Extra.Mores[java.MethodReturnRawType].(string)
 		if retType != "List<? extends T>" {
 			t.Errorf("Expected return type List<? extends T>, got %s", retType)
 		}
@@ -1496,7 +1496,7 @@ func TestJavaCollector_MethodOverloading(t *testing.T) {
 			}
 
 			// 验证返回值提取
-			retType, _ := defs[0].Element.Extra.Mores[java.MethodReturnType].(string)
+			retType, _ := defs[0].Element.Extra.Mores[java.MethodReturnRawType].(string)
 			if retType != tc.expected {
 				t.Errorf("For %s, expected return type %s, got %s", tc.qn, tc.expected, retType)
 			}
@@ -1570,7 +1570,7 @@ func TestJavaCollector_ParameterScope(t *testing.T) {
 			t.Fatalf("Varargs parameter 'labels' not found")
 		}
 
-		vType := defs[0].Element.Extra.Mores[java.VariableType].(string)
+		vType := defs[0].Element.Extra.Mores[java.VariableRawType].(string)
 		// 验证你的 extractTypeString 是否正确处理了 "..."
 		if !strings.Contains(vType, "...") {
 			t.Errorf("Expected type with '...', got %s", vType)

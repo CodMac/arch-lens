@@ -17,13 +17,13 @@ const (
 	MethodIsImplicit               = "java.method.is_implicit"        // 是否为隐式方法 (如编译器自动生成的构造函数) -> bool
 	MethodIsAnnotation             = "java.method.is_annotation"      // 是否为注解类型中的元素方法 -> bool
 	MethodDefaultValue             = "java.method.default_value"      // 注解元素的默认值 -> string
-	MethodReturnType               = "java.method.return_type"        // 方法返回值的原始类型文本 -> string
+	MethodReturnRawType            = "java.method.return_raw_type"    // 方法返回值的原始类型文本 -> string
 	MethodParameters               = "java.method.parameters"         // 方法定义的参数列表 (含类型和名称) -> []string
 	MethodThrowsTypes              = "java.method.throws"             // 方法声明抛出的异常类型列表 -> []string
-	VariableType                   = "java.variable.type"             // 局部变量的类型文本 -> string
+	VariableRawType                = "java.variable.raw_type"         // 局部变量的类型文本 -> string
 	VariableIsFinal                = "java.variable.is_final"         // 局部变量是否带有 final 修饰符 -> bool
 	VariableIsParam                = "java.variable.is_param"         // 变量是否为方法参数 -> bool
-	FieldType                      = "java.field.type"                // 成员字段的类型文本 -> string
+	FieldRawType                   = "java.field.raw_type"            // 成员字段的类型文本 -> string
 	FieldIsStatic                  = "java.field.is_static"           // 字段是否为静态 (static) -> bool
 	FieldIsFinal                   = "java.field.is_final"            // 字段是否为终态 (final) -> bool
 	FieldIsConstant                = "java.field.is_constant"         // 字段是否为常量 (通常指 static final 且有初始值) -> bool

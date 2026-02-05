@@ -150,7 +150,7 @@ func (e *Extractor) extractStructural(fCtx *core.FileContext, gCtx *core.GlobalC
 					})
 				}
 			}
-			if rt, ok := elem.Extra.Mores[MethodReturnType].(string); ok && rt != "void" && rt != "" {
+			if rt, ok := elem.Extra.Mores[MethodReturnRawType].(string); ok && rt != "void" && rt != "" {
 				target := e.resolver.Resolve(gCtx, fCtx, nil, e.clean(rt), model.Class)
 				rels = append(rels, &model.DependencyRelation{
 					Type: model.Return, Source: elem, Target: target,
@@ -740,7 +740,7 @@ func (e *Extractor) extractTypeFromParam(p string) string {
 }
 
 func (e *Extractor) getRawTypesForTypeArgs(elem *model.CodeElement) (res []string) {
-	keys := []string{FieldType, VariableType, MethodReturnType}
+	keys := []string{FieldRawType, VariableRawType, MethodReturnRawType}
 
 	for _, k := range keys {
 		if v, ok := elem.Extra.Mores[k].(string); ok {

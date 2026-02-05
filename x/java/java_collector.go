@@ -349,7 +349,7 @@ func (c *Collector) fillMethodMetadata(elem *model.CodeElement, node *sitter.Nod
 	retType := ""
 	if tNode := node.ChildByFieldName("type"); tNode != nil {
 		retType = c.getNodeContent(tNode, *fCtx.SourceBytes)
-		extra.Mores[MethodReturnType] = retType
+		extra.Mores[MethodReturnRawType] = retType
 	}
 
 	paramsRaw := c.extractParameterWithNames(node, fCtx.SourceBytes)
@@ -370,14 +370,14 @@ func (c *Collector) fillMethodMetadata(elem *model.CodeElement, node *sitter.Nod
 
 func (c *Collector) fillFieldMetadata(elem *model.CodeElement, node *sitter.Node, extra *model.Extra, mods []string, isStatic, isFinal bool, fCtx *core.FileContext) {
 	vType := c.extractTypeString(node, fCtx.SourceBytes)
-	extra.Mores[FieldType], extra.Mores[FieldIsStatic], extra.Mores[FieldIsFinal] = vType, isStatic, isFinal
+	extra.Mores[FieldRawType], extra.Mores[FieldIsStatic], extra.Mores[FieldIsFinal] = vType, isStatic, isFinal
 	extra.Mores[FieldIsConstant] = isStatic && isFinal
 	elem.Signature = strings.TrimSpace(fmt.Sprintf("%s %s %s", strings.Join(mods, " "), vType, elem.Name))
 }
 
 func (c *Collector) fillLocalVariableMetadata(elem *model.CodeElement, node *sitter.Node, extra *model.Extra, mods []string, isFinal bool, fCtx *core.FileContext) {
 	vType := c.extractTypeString(node, fCtx.SourceBytes)
-	extra.Mores[VariableType], extra.Mores[VariableIsFinal] = vType, isFinal
+	extra.Mores[VariableRawType], extra.Mores[VariableIsFinal] = vType, isFinal
 	extra.Mores[VariableIsParam] = (node.Kind() == "formal_parameter" || node.Kind() == "spread_parameter")
 	elem.Signature = strings.TrimSpace(fmt.Sprintf("%s %s %s", strings.Join(mods, " "), vType, elem.Name))
 }
