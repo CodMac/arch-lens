@@ -1521,9 +1521,11 @@ func TestJavaExtractor_VariableResolve(t *testing.T) {
 	case3Sub := "testdata/com/example/rel/use/case3/Sub.java"
 	case4 := "testdata/com/example/rel/use/case4/StaticTest.java"
 	case5 := "testdata/com/example/rel/use/case5/ClosureTest.java"
+	case6ReceiverTest := "testdata/com/example/rel/use/case6/ReceiverTest.java"
+	case6User := "testdata/com/example/rel/use/case6/User.java"
 
 	// 预运行：收集所有相关文件的定义到全局上下文
-	allFiles := []string{case1, case2Parent, case2Child, case3Base, case3Sub, case4, case5}
+	allFiles := []string{case1, case2Parent, case2Child, case3Base, case3Sub, case4, case5, case6ReceiverTest, case6User}
 	gCtx := runPhase1Collection(t, allFiles)
 	extractor := java.NewJavaExtractor()
 
@@ -1655,6 +1657,38 @@ func TestJavaExtractor_VariableResolve(t *testing.T) {
 					sourceQN:   "com.example.rel.use.case5.ClosureTest.run().$lambda1",
 					targetQN:   "com.example.rel.use.case5.ClosureTest.context",
 					targetKind: model.Field,
+				},
+			},
+		},
+		{
+			name:       "Case 6: Chained Receiver Trace",
+			targetFile: "testdata/com/example/rel/use/case6/ReceiverTest.java",
+			expected: []struct {
+				relType    model.DependencyType
+				sourceQN   string
+				targetQN   string
+				targetKind model.ElementKind
+			}{
+				// 1. 变量使用：user 应该指向方法内的局部变量
+				{
+					relType:    model.Use,
+					sourceQN:   "com.example.rel.use.case6.ReceiverTest.test()",
+					targetQN:   "com.example.rel.use.case6.ReceiverTest.test().user",
+					targetKind: model.Variable,
+				},
+				// 2. 方法调用：getName() 的 Receiver 是 user (User类型)
+				{
+					relType:    model.Call,
+					sourceQN:   "com.example.rel.use.case6.ReceiverTest.test()",
+					targetQN:   "com.example.rel.use.case6.User.getName()", // 理想目标
+					targetKind: model.Method,
+				},
+				// 3. 链式调用：trim() 的 Receiver 是 getName() 的返回值 (String类型)
+				{
+					relType:    model.Call,
+					sourceQN:   "com.example.rel.use.case6.ReceiverTest.test()",
+					targetQN:   "String.trim()", // 理想目标
+					targetKind: model.Method,
 				},
 			},
 		},
