@@ -349,7 +349,7 @@ func (c *Collector) fillMethodMetadata(elem *model.CodeElement, node *sitter.Nod
 	retType := ""
 	if tNode := node.ChildByFieldName("type"); tNode != nil {
 		retType = c.getNodeContent(tNode, *fCtx.SourceBytes)
-		extra.Mores[MethodReturnRawType] = retType
+		extra.Mores[MethodReturnType] = retType
 	}
 
 	paramsRaw := c.extractParameterWithNames(node, fCtx.SourceBytes)

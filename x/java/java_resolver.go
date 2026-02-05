@@ -16,7 +16,7 @@ func NewJavaSymbolResolver() *SymbolResolver {
 }
 
 // =============================================================================
-// 1. 基础接口实现
+// 1. 基础接口实现 (Basic Interface)
 // =============================================================================
 
 func (j *SymbolResolver) BuildQualifiedName(parentQN, name string) string {
@@ -41,7 +41,7 @@ func (j *SymbolResolver) RegisterPackage(gc *core.GlobalContext, packageName str
 	}
 }
 
-// Resolve 是对外统一入口
+// Resolve 为外部统一入口
 func (j *SymbolResolver) Resolve(gc *core.GlobalContext, fc *core.FileContext, node *sitter.Node, symbol string, kind model.ElementKind) *model.CodeElement {
 	switch kind {
 	case model.Variable:
@@ -54,13 +54,12 @@ func (j *SymbolResolver) Resolve(gc *core.GlobalContext, fc *core.FileContext, n
 }
 
 // =============================================================================
-// 2. 核心查找流程 (Variable, Method, Structure)
+// 2. 核心查找流程 (Core Resolution Flow)
 // =============================================================================
 
-// resolveVariable 实现作用域回溯查找
+// resolveVariable 处理变量查找，支持本地作用域回溯和类成员继承查找
 func (j *SymbolResolver) resolveVariable(gc *core.GlobalContext, fc *core.FileContext, node *sitter.Node, name string) *model.CodeElement {
 	cleanName := strings.TrimSpace(name)
-	// 定义可以作为变量容器的类型
 	containerTypes := []model.ElementKind{model.Class, model.AnonymousClass, model.Lambda, model.Method, model.ScopeBlock}
 	container := j.determinePreciseContainer(fc, node, containerTypes)
 
@@ -68,48 +67,48 @@ func (j *SymbolResolver) resolveVariable(gc *core.GlobalContext, fc *core.FileCo
 		return j.resolveStructure(gc, fc, cleanName, model.Variable)
 	}
 
-	// 初始判定：是否处于静态上下文 (静态方法/静态块)
 	isStatic := slices.Contains(container.Extra.Modifiers, "static")
-
 	return j.resolveInScopeHierarchy(gc, fc, container.QualifiedName, cleanName, isStatic, container)
 }
 
-// resolveMethod 处理重载识别
+// resolveMethod 处理方法查找，利用 Collector 的元数据进行重载过滤
 func (j *SymbolResolver) resolveMethod(gc *core.GlobalContext, fc *core.FileContext, node *sitter.Node, symbol string) *model.CodeElement {
 	cleanName := strings.TrimSpace(symbol)
 
-	// 1. 识别调用处的实参个数 (Argument Count)
+	// 1. 启发式分析：识别调用处的实参个数与大致类型
 	argCount := -1
+	var inferredArgTypes []string
 	if node != nil {
 		if callNode := j.findInvocationNode(node); callNode != nil {
-			if args := callNode.ChildByFieldName("arguments"); args != nil {
-				argCount = int(args.NamedChildCount())
+			if argsNode := callNode.ChildByFieldName("arguments"); argsNode != nil {
+				argCount = int(argsNode.NamedChildCount())
+				inferredArgTypes = j.inferArgumentTypes(argsNode, fc)
 			}
 		}
 	}
 
-	// 2. 获取当前上下文的容器，用于开启回溯
+	// 2. 确定起点：获取当前节点所在的容器类或方法
 	container := j.determinePreciseContainer(fc, node, []model.ElementKind{model.Class, model.Method})
 	var startQN string
 	if container != nil {
 		startQN = container.QualifiedName
 	}
 
-	// 3. 开启方法查找：当前类 -> 父类继承链 -> Import/静态导入
-	method := j.resolveInScopeHierarchy(gc, fc, startQN, cleanName, false, container)
+	// 3. 递归回溯：搜索本类 -> 继承链 -> 父级作用域
+	// 这里直接复用层级查找逻辑
+	methodElem := j.resolveInScopeHierarchy(gc, fc, startQN, cleanName, false, container)
 
-	// 如果回溯没找到（可能是本类/父类方法），退而求其次使用导入解析
-	if method == nil || method.IsFormExternal {
+	// 4. 重载匹配：如果在全局找到多个同名 entry，进行过滤
+	if methodElem == nil || methodElem.IsFormExternal {
 		entries := j.preciseResolve(gc, fc, cleanName)
 		if len(entries) > 0 {
-			// 在匹配到的多个重载中，寻找参数数量最匹配的
-			return j.pickBestOverload(entries, argCount)
+			return j.pickBestOverloadEnhanced(entries, argCount, inferredArgTypes)
 		}
 	} else {
-		return method
+		return methodElem
 	}
 
-	// 4. 彻底没找到，返回外部占位符
+	// 5. 兜底处理：尝试利用 Import 还原 QualifiedName
 	qualifiedName := cleanName
 	if imps, ok := fc.Imports[cleanName]; ok && len(imps) > 0 {
 		qualifiedName = imps[0].RawImportPath
@@ -117,13 +116,12 @@ func (j *SymbolResolver) resolveMethod(gc *core.GlobalContext, fc *core.FileCont
 	return &model.CodeElement{Name: cleanName, QualifiedName: qualifiedName, Kind: model.Method, IsFormExternal: true}
 }
 
-// resolveStructure 处理类、接口等结构体符号
+// resolveStructure 处理类、接口、包等结构性符号
 func (j *SymbolResolver) resolveStructure(gc *core.GlobalContext, fc *core.FileContext, symbol string, kind model.ElementKind) *model.CodeElement {
 	if entries := j.preciseResolve(gc, fc, symbol); len(entries) > 0 {
 		return entries[0].Element
 	}
 
-	// 外部符号占位：尝试利用 Import 还原 QualifiedName
 	qualifiedName := symbol
 	if imps, ok := fc.Imports[symbol]; ok && len(imps) > 0 {
 		qualifiedName = imps[0].RawImportPath
@@ -132,7 +130,7 @@ func (j *SymbolResolver) resolveStructure(gc *core.GlobalContext, fc *core.FileC
 }
 
 // =============================================================================
-// 3. 递归回溯与继承查找 (The Core Logic)
+// 3. 递归查找逻辑 (Hierarchical Search)
 // =============================================================================
 
 // resolveInScopeHierarchy 递归向上查找容器及继承链
@@ -141,10 +139,9 @@ func (j *SymbolResolver) resolveInScopeHierarchy(gc *core.GlobalContext, fc *cor
 		return nil
 	}
 
-	// 1. 尝试在当前层级直接匹配 QN
+	// 1. 尝试在当前层级直接匹配
 	targetQN := j.BuildQualifiedName(containerQN, symbol)
 	if entry, ok := gc.FindByQualifiedName(targetQN); ok {
-		// 检查静态约束与可见性
 		if j.checkVisibility(gc, fc, sourceElem, entry) {
 			isIllegalStatic := isStatic && entry.Element.Kind == model.Field && !slices.Contains(entry.Element.Extra.Modifiers, "static")
 			if !isIllegalStatic {
@@ -153,24 +150,23 @@ func (j *SymbolResolver) resolveInScopeHierarchy(gc *core.GlobalContext, fc *cor
 		}
 	}
 
-	// 2. 当前层级未命中，获取容器实体以继续向上
 	containerEntry, ok := gc.FindByQualifiedName(containerQN)
 	if !ok {
 		return nil
 	}
 
-	// A. 如果是类，递归查找其继承链 (extends/implements)
+	// 2. 如果是类/接口，递归查找其继承链 (extends/implements)
 	if containerEntry.Element.Kind == model.Class || containerEntry.Element.Kind == model.Interface {
 		if inherited := j.resolveFromInheritance(gc, fc, containerEntry.Element, symbol, isStatic, sourceElem); inherited != nil {
 			return inherited
 		}
 	}
 
-	// B. 递归到父级容器 (Lexical Scope Up)
+	// 3. 递归到上一级 Lexical Scope
 	return j.resolveInScopeHierarchy(gc, fc, containerEntry.ParentQN, symbol, isStatic, sourceElem)
 }
 
-// resolveFromInheritance 递归处理父类与接口的 Field，支持静态过滤与可见性
+// resolveFromInheritance 处理继承树查找
 func (j *SymbolResolver) resolveFromInheritance(gc *core.GlobalContext, fc *core.FileContext, elem *model.CodeElement, symbol string, isStatic bool, sourceElem *model.CodeElement) *model.CodeElement {
 	if elem.Extra == nil {
 		return nil
@@ -190,17 +186,16 @@ func (j *SymbolResolver) resolveFromInheritance(gc *core.GlobalContext, fc *core
 
 		if len(parentEntries) > 0 {
 			parentElem := parentEntries[0].Element
-			targetFieldQN := j.BuildQualifiedName(parentElem.QualifiedName, symbol)
+			targetQN := j.BuildQualifiedName(parentElem.QualifiedName, symbol)
 
-			if fieldEntry, ok := gc.FindByQualifiedName(targetFieldQN); ok {
-				// 校验可见性与静态约束
+			if fieldEntry, ok := gc.FindByQualifiedName(targetQN); ok {
 				if j.checkVisibility(gc, fc, sourceElem, fieldEntry) {
 					if !isStatic || slices.Contains(fieldEntry.Element.Extra.Modifiers, "static") {
 						return fieldEntry.Element
 					}
 				}
 			}
-			// 深度优先：递归查找父类的父类
+			// 深度优先递归父类的父类
 			if found := j.resolveFromInheritance(gc, fc, parentElem, symbol, isStatic, sourceElem); found != nil {
 				return found
 			}
@@ -210,10 +205,162 @@ func (j *SymbolResolver) resolveFromInheritance(gc *core.GlobalContext, fc *core
 }
 
 // =============================================================================
-// 4. 辅助校验与解析工具
+// 4. 重载与类型匹配辅助 (Overload & Type Inference)
 // =============================================================================
 
-// preciseResolve 基础符号查找逻辑 (本地->精确导入->同包->通配符)
+// pickBestOverloadEnhanced 结合参数数量和启发式类型匹配选择最优重载
+func (j *SymbolResolver) pickBestOverloadEnhanced(entries []*core.DefinitionEntry, argCount int, inferredTypes []string) *model.CodeElement {
+	var bestMatch *model.CodeElement
+	maxScore := -1
+
+	for _, entry := range entries {
+		if entry.Element.Kind != model.Method {
+			continue
+		}
+
+		params, ok := entry.Element.Extra.Mores[MethodParameters].([]string)
+		if !ok {
+			if bestMatch == nil {
+				bestMatch = entry.Element
+			}
+			continue
+		}
+
+		currentScore := 0
+		definedParamCount := len(params) / 2
+
+		// 1. 参数数量匹配 (主权重)
+		if definedParamCount == argCount {
+			currentScore += 100
+
+			// 2. 启发式类型匹配 (次权重)
+			if argCount > 0 && len(inferredTypes) == argCount {
+				for i := 0; i < argCount; i++ {
+					definedRawType := params[i*2]
+					erasedDefinedType := strings.Split(definedRawType, "<")[0] // 泛型擦除
+
+					inferred := inferredTypes[i]
+					if inferred == "unknown" {
+						continue
+					}
+
+					if inferred == "null" {
+						if !j.isPrimitive(erasedDefinedType) {
+							currentScore += 5
+						}
+						continue
+					}
+
+					if j.typeMatches(erasedDefinedType, inferred) {
+						currentScore += 20
+					}
+				}
+			}
+		}
+
+		if currentScore > maxScore {
+			maxScore = currentScore
+			bestMatch = entry.Element
+		}
+	}
+
+	if bestMatch != nil {
+		return bestMatch
+	}
+	return entries[0].Element
+}
+
+// inferArgumentTypes 尝试从实参 AST 节点推断大致类型
+func (j *SymbolResolver) inferArgumentTypes(argsNode *sitter.Node, fc *core.FileContext) []string {
+	var types []string
+	src := *fc.SourceBytes
+
+	for i := 0; i < int(argsNode.NamedChildCount()); i++ {
+		arg := argsNode.NamedChild(uint(i))
+		kind := arg.Kind()
+
+		switch kind {
+		case "string_literal":
+			types = append(types, "String")
+		case "decimal_integer_literal", "hex_integer_literal":
+			types = append(types, "int")
+		case "decimal_floating_point_literal":
+			types = append(types, "double")
+		case "true", "false", "boolean_type":
+			types = append(types, "boolean")
+		case "null_literal":
+			types = append(types, "null")
+		case "object_creation_expression", "cast_expression":
+			if typeNode := arg.ChildByFieldName("type"); typeNode != nil {
+				types = append(types, j.getNodeContent(typeNode, src))
+			} else {
+				types = append(types, "unknown")
+			}
+		case "array_creation_expression":
+			if typeNode := arg.ChildByFieldName("type"); typeNode != nil {
+				types = append(types, j.getNodeContent(typeNode, src)+"[]")
+			} else {
+				types = append(types, "unknown")
+			}
+		default:
+			types = append(types, "unknown")
+		}
+	}
+	return types
+}
+
+// =============================================================================
+// 5. 校验与底层工具 (Utilities)
+// =============================================================================
+
+func (j *SymbolResolver) checkVisibility(gc *core.GlobalContext, fc *core.FileContext, source *model.CodeElement, target *core.DefinitionEntry) bool {
+	// 局部变量/形参无可见性限制
+	if target.Element.Kind == model.Variable {
+		return true
+	}
+
+	mods := target.Element.Extra.Modifiers
+	if slices.Contains(mods, "public") {
+		return true
+	}
+
+	targetPkg := j.getPackageFromQN(target.ParentQN)
+	if targetPkg == fc.PackageName {
+		return true
+	}
+
+	// Protected: 检查子类关系
+	if slices.Contains(mods, "protected") {
+		sourceClass := j.getOwnerClassQN(gc, source)
+		return j.isSubClassOf(gc, fc, sourceClass, target.ParentQN)
+	}
+
+	return false // Private 或跨包 Default 默认不可见
+}
+
+func (j *SymbolResolver) typeMatches(defined, inferred string) bool {
+	if defined == inferred {
+		return true
+	}
+	// 处理基础类型包装类
+	if (defined == "Integer" && inferred == "int") || (defined == "int" && inferred == "Integer") {
+		return true
+	}
+	// 简单的全限定名后缀匹配
+	if strings.HasSuffix(defined, inferred) {
+		return true
+	}
+	return false
+}
+
+func (j *SymbolResolver) isPrimitive(t string) bool {
+	switch t {
+	case "int", "long", "short", "byte", "char", "boolean", "float", "double":
+		return true
+	}
+	return false
+}
+
 func (j *SymbolResolver) preciseResolve(gc *core.GlobalContext, fc *core.FileContext, symbol string) []*core.DefinitionEntry {
 	gc.RLock()
 	defer gc.RUnlock()
@@ -221,7 +368,6 @@ func (j *SymbolResolver) preciseResolve(gc *core.GlobalContext, fc *core.FileCon
 	if defs, ok := fc.FindByShortName(symbol); ok {
 		return defs
 	}
-
 	if imps, ok := fc.Imports[symbol]; ok {
 		for _, imp := range imps {
 			if def, found := gc.FindByQualifiedName(imp.RawImportPath); found {
@@ -229,7 +375,6 @@ func (j *SymbolResolver) preciseResolve(gc *core.GlobalContext, fc *core.FileCon
 			}
 		}
 	}
-
 	pkgQN := j.BuildQualifiedName(fc.PackageName, symbol)
 	if def, ok := gc.FindByQualifiedName(pkgQN); ok {
 		return []*core.DefinitionEntry{def}
@@ -245,39 +390,16 @@ func (j *SymbolResolver) preciseResolve(gc *core.GlobalContext, fc *core.FileCon
 			}
 		}
 	}
-
 	if def, ok := gc.FindByQualifiedName(symbol); ok {
 		return []*core.DefinitionEntry{def}
 	}
 	return nil
 }
 
-// checkVisibility 检查访问权限
-func (j *SymbolResolver) checkVisibility(gc *core.GlobalContext, fc *core.FileContext, source *model.CodeElement, target *core.DefinitionEntry) bool {
-	if target.Element.Kind != model.Field {
-		return true
-	} // 局部变量始终可见
-
-	mods := target.Element.Extra.Modifiers
-	if slices.Contains(mods, "public") {
-		return true
-	}
-
-	targetPkg := j.getPackageFromQN(target.ParentQN)
-	if targetPkg == fc.PackageName {
-		return true
-	}
-
-	// Protected 跨包检查：是否为子类关系
-	if slices.Contains(mods, "protected") {
-		sourceClass := j.getOwnerClassQN(gc, source)
-		return j.isSubClassOf(gc, fc, sourceClass, target.ParentQN)
-	}
-
-	return false // Private 或 Default 跨包均不可见
-}
-
 func (j *SymbolResolver) determinePreciseContainer(fc *core.FileContext, n *sitter.Node, kinds []model.ElementKind) *model.CodeElement {
+	if n == nil {
+		return nil
+	}
 	var best *model.CodeElement
 	var minSize uint32 = 0xFFFFFFFF
 	row := int(n.StartPosition().Row + 1)
@@ -292,26 +414,6 @@ func (j *SymbolResolver) determinePreciseContainer(fc *core.FileContext, n *sitt
 		}
 	}
 	return best
-}
-
-// pickBestOverload 在多个方法定义中根据参数量选择最优解
-func (j *SymbolResolver) pickBestOverload(entries []*core.DefinitionEntry, argCount int) *model.CodeElement {
-	if len(entries) == 1 {
-		return entries[0].Element
-	}
-
-	for _, entry := range entries {
-		if entry.Element.Kind != model.Method {
-			continue
-		}
-		// 对应 Collector 中的存储格式：[type1, name1, type2, name2]
-		if params, ok := entry.Element.Extra.Mores[MethodParameters].([]string); ok {
-			if len(params)/2 == argCount {
-				return entry.Element
-			}
-		}
-	}
-	return entries[0].Element // 找不到精确匹配时返回第一个
 }
 
 func (j *SymbolResolver) getOwnerClassQN(gc *core.GlobalContext, elem *model.CodeElement) string {
@@ -368,4 +470,8 @@ func (j *SymbolResolver) findInvocationNode(n *sitter.Node) *sitter.Node {
 		}
 	}
 	return nil
+}
+
+func (j *SymbolResolver) getNodeContent(n *sitter.Node, src []byte) string {
+	return strings.TrimSpace(string(src[n.StartByte():n.EndByte()]))
 }

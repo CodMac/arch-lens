@@ -158,7 +158,7 @@ func TestJavaCollector_AbstractBaseEntity(t *testing.T) {
 		}
 
 		getElem := getDefs[0].Element
-		if ret := getElem.Extra.Mores[java.MethodReturnRawType]; ret != "ID" {
+		if ret := getElem.Extra.Mores[java.MethodReturnType]; ret != "ID" {
 			t.Errorf("getId expected return ID, got %v", ret)
 		}
 
@@ -170,7 +170,7 @@ func TestJavaCollector_AbstractBaseEntity(t *testing.T) {
 		}
 
 		setElem := setDefs[0].Element
-		if ret := setElem.Extra.Mores[java.MethodReturnRawType]; ret != "void" {
+		if ret := setElem.Extra.Mores[java.MethodReturnType]; ret != "void" {
 			t.Errorf("setId expected return void, got %v", ret)
 		}
 	})
@@ -789,7 +789,7 @@ func TestJavaCollector_EnumErrorCode(t *testing.T) {
 		}
 	})
 
-	// 4. 验证成员方法及其返回值类型 (使用 java.MethodReturnRawType)
+	// 4. 验证成员方法及其返回值类型 (使用 java.MethodReturnType)
 	t.Run("Verify Enum Member Methods", func(t *testing.T) {
 		qn := "com.example.base.enum.ErrorCode.getMessage()"
 		defs := findDefinitionsByQN(fCtx, qn)
@@ -798,7 +798,7 @@ func TestJavaCollector_EnumErrorCode(t *testing.T) {
 		}
 
 		elem := defs[0].Element
-		retType, ok := elem.Extra.Mores[java.MethodReturnRawType].(string)
+		retType, ok := elem.Extra.Mores[java.MethodReturnType].(string)
 		if !ok || retType != "String" {
 			t.Errorf("Expected return type String, got %v", retType)
 		}
@@ -1047,7 +1047,7 @@ func TestJavaCollector_UserServiceImpl(t *testing.T) {
 		elem := defs[0].Element
 
 		// 验证泛型返回值
-		if ret := elem.Extra.Mores[java.MethodReturnRawType].(string); ret != "List<AbstractBaseEntity<String>>" {
+		if ret := elem.Extra.Mores[java.MethodReturnType].(string); ret != "List<AbstractBaseEntity<String>>" {
 			t.Errorf("Expected return type List<AbstractBaseEntity<String>>, got %s", ret)
 		}
 
@@ -1336,8 +1336,8 @@ func TestJavaCollector_GenericComplex(t *testing.T) {
 		}
 		elem := defs[0].Element
 
-		// 验证返回值 (MethodReturnRawType)
-		retType, _ := elem.Extra.Mores[java.MethodReturnRawType].(string)
+		// 验证返回值 (MethodReturnType)
+		retType, _ := elem.Extra.Mores[java.MethodReturnType].(string)
 		if retType != "List<? extends T>" {
 			t.Errorf("Expected return type List<? extends T>, got %s", retType)
 		}
@@ -1496,7 +1496,7 @@ func TestJavaCollector_MethodOverloading(t *testing.T) {
 			}
 
 			// 验证返回值提取
-			retType, _ := defs[0].Element.Extra.Mores[java.MethodReturnRawType].(string)
+			retType, _ := defs[0].Element.Extra.Mores[java.MethodReturnType].(string)
 			if retType != tc.expected {
 				t.Errorf("For %s, expected return type %s, got %s", tc.qn, tc.expected, retType)
 			}

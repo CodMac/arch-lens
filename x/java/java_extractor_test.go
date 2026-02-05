@@ -1512,6 +1512,180 @@ func TestJavaExtractor_TypeArg(t *testing.T) {
 	}
 }
 
+func TestJavaExtractor_VariableResolve(t *testing.T) {
+	// 定义测试文件组
+	case1 := "testdata/com/example/rel/use/case1/ScopeTest.java"
+	case2Parent := "testdata/com/example/rel/use/case2/Parent.java"
+	case2Child := "testdata/com/example/rel/use/case2/Child.java"
+	case3Base := "testdata/com/example/rel/use/case3/Base.java"
+	case3Sub := "testdata/com/example/rel/use/case3/Sub.java"
+	case4 := "testdata/com/example/rel/use/case4/StaticTest.java"
+	case5 := "testdata/com/example/rel/use/case5/ClosureTest.java"
+
+	// 预运行：收集所有相关文件的定义到全局上下文
+	allFiles := []string{case1, case2Parent, case2Child, case3Base, case3Sub, case4, case5}
+	gCtx := runPhase1Collection(t, allFiles)
+	extractor := java.NewJavaExtractor()
+
+	// 验证逻辑
+	testCases := []struct {
+		name       string
+		targetFile string
+		expected   []struct {
+			relType    model.DependencyType
+			sourceQN   string
+			targetQN   string // 这里的 targetQN 期待的是解析后的全限定名
+			targetKind model.ElementKind
+		}
+	}{
+		{
+			name:       "Case 1: Lexical Scope Shadowing",
+			targetFile: case1,
+			expected: []struct {
+				relType    model.DependencyType
+				sourceQN   string
+				targetQN   string
+				targetKind model.ElementKind
+			}{
+				// [Case 1] if块内的 name 应该解析为块内定义的局部变量
+				{
+					relType:    model.Use,
+					sourceQN:   "com.example.rel.use.case1.ScopeTest.test(String)",
+					targetQN:   "com.example.rel.use.case1.ScopeTest.test(String).$block1.name",
+					targetKind: model.Variable,
+				},
+				// [Case 2] if块外的 name 应该解析为方法的参数
+				{
+					relType:    model.Use,
+					sourceQN:   "com.example.rel.use.case1.ScopeTest.test(String)",
+					targetQN:   "com.example.rel.use.case1.ScopeTest.test(String).name",
+					targetKind: model.Variable,
+				},
+			},
+		},
+		{
+			name:       "Case 2: Inheritance and Shadowing",
+			targetFile: case2Child,
+			expected: []struct {
+				relType    model.DependencyType
+				sourceQN   string
+				targetQN   string
+				targetKind model.ElementKind
+			}{
+				// [Case 3] count 遮蔽：应解析为 Child 自己的字段而非 Parent 的
+				{
+					relType:    model.Use,
+					sourceQN:   "com.example.rel.use.case2.Child.print()",
+					targetQN:   "com.example.rel.use.case2.Child.count",
+					targetKind: model.Field,
+				},
+				// [Case 4] 静态继承：应解析到 Parent.TAG
+				{
+					relType:    model.Use,
+					sourceQN:   "com.example.rel.use.case2.Child.print()",
+					targetQN:   "com.example.rel.use.case2.Parent.TAG",
+					targetKind: model.Field,
+				},
+			},
+		},
+		{
+			name:       "Case 3: Visibility (Protected vs Package)",
+			targetFile: case3Sub,
+			expected: []struct {
+				relType    model.DependencyType
+				sourceQN   string
+				targetQN   string
+				targetKind model.ElementKind
+			}{
+				// [Case 5] Protected 变量在子类可见
+				{
+					relType:    model.Use,
+					sourceQN:   "com.example.rel.use.case3.pk2.Sub.check()",
+					targetQN:   "com.example.rel.use.case3.pk1.Base.protectedVar",
+					targetKind: model.Field,
+				},
+				// [Case 6] Package 变量跨包不可见，Resolver 应返回 External 占位或标记
+				{
+					relType:    model.Use,
+					sourceQN:   "com.example.rel.use.case3.pk2.Sub.check()",
+					targetQN:   "packageVar", // 未能解析到 QN，保持短名
+					targetKind: model.Field,
+				},
+			},
+		},
+		{
+			name:       "Case 4: Static Constraint",
+			targetFile: case4,
+			expected: []struct {
+				relType    model.DependencyType
+				sourceQN   string
+				targetQN   string
+				targetKind model.ElementKind
+			}{
+				// [Case 7] 静态方法访问静态变量
+				{
+					relType:    model.Use,
+					sourceQN:   "com.example.rel.use.case4.StaticTest.staticMethod()",
+					targetQN:   "com.example.rel.use.case4.StaticTest.staticVar",
+					targetKind: model.Field,
+				},
+				// [Case 8] 静态方法访问实例变量 (解析器应因 checkVisibility 或 static 校验而拒绝)
+				// 注意：如果 Resolver 实现了静态校验，这里 targetQN 不应是全路径
+			},
+		},
+		{
+			name:       "Case 5: Closures (Anonymous Class & Lambda)",
+			targetFile: case5,
+			expected: []struct {
+				relType    model.DependencyType
+				sourceQN   string
+				targetQN   string
+				targetKind model.ElementKind
+			}{
+				// [Case 9] 匿名内部类访问自己的 context
+				{
+					relType:    model.Use,
+					sourceQN:   "com.example.rel.use.case5.ClosureTest.run().$1.run()",
+					targetQN:   "com.example.rel.use.case5.ClosureTest.run().$1.context",
+					targetKind: model.Field,
+				},
+				// [Case 10] Lambda 捕获外部类的 context
+				{
+					relType:    model.Use,
+					sourceQN:   "com.example.rel.use.case5.ClosureTest.run().$lambda1",
+					targetQN:   "com.example.rel.use.case5.ClosureTest.context",
+					targetKind: model.Field,
+				},
+			},
+		},
+	}
+
+	// 执行测试循环
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			allRelations, err := extractor.Extract(tc.targetFile, gCtx)
+			assert.NoError(t, err)
+
+			printRelations(allRelations)
+
+			for _, exp := range tc.expected {
+				found := false
+				for _, rel := range allRelations {
+					// 匹配逻辑：源 QN 包含预期后缀，且目标 QN 完全匹配
+					if rel.Type == exp.relType &&
+						rel.Target.QualifiedName == exp.targetQN &&
+						strings.Contains(rel.Source.QualifiedName, exp.sourceQN) {
+						found = true
+						assert.Equal(t, exp.targetKind, rel.Target.Kind)
+						break
+					}
+				}
+				assert.True(t, found, "Missing Rel: [%s] from %s to %s", exp.relType, exp.sourceQN, exp.targetQN)
+			}
+		})
+	}
+}
+
 // --- 这里放置你提供的辅助函数 ---
 
 func runPhase1Collection(t *testing.T, files []string) *core.GlobalContext {
