@@ -58,17 +58,17 @@ func (j *SymbolResolver) Resolve(gc *core.GlobalContext, fc *core.FileContext, n
 // =============================================================================
 
 // resolveVariable 处理变量查找，支持本地作用域回溯和类成员继承查找
-func (j *SymbolResolver) resolveVariable(gc *core.GlobalContext, fc *core.FileContext, node *sitter.Node, name string) *model.CodeElement {
-	cleanName := strings.TrimSpace(name)
-	containerTypes := []model.ElementKind{model.Class, model.AnonymousClass, model.Lambda, model.Method, model.ScopeBlock}
+func (j *SymbolResolver) resolveVariable(gc *core.GlobalContext, fc *core.FileContext, node *sitter.Node, symbol string) *model.CodeElement {
+	cleanName := strings.TrimSpace(symbol)
+	containerTypes := []model.ElementKind{model.Method, model.ScopeBlock, model.Lambda}
 	container := j.determinePreciseContainer(fc, node, containerTypes)
-
 	if container == nil {
-		return j.resolveStructure(gc, fc, cleanName, model.Variable)
+		return nil
 	}
 
 	isStatic := slices.Contains(container.Extra.Modifiers, "static")
-	return j.resolveInScopeHierarchy(gc, fc, container.QualifiedName, cleanName, isStatic, container)
+	previousQN := container.QualifiedName
+	return j.resolveInScopeHierarchy(gc, fc, previousQN, cleanName, isStatic, container)
 }
 
 // resolveMethod 处理方法查找，利用 Collector 的元数据进行重载过滤
@@ -134,15 +134,15 @@ func (j *SymbolResolver) resolveStructure(gc *core.GlobalContext, fc *core.FileC
 // =============================================================================
 
 // resolveInScopeHierarchy 递归向上查找容器及继承链
-func (j *SymbolResolver) resolveInScopeHierarchy(gc *core.GlobalContext, fc *core.FileContext, containerQN, symbol string, isStatic bool, sourceElem *model.CodeElement) *model.CodeElement {
-	if containerQN == "" {
+func (j *SymbolResolver) resolveInScopeHierarchy(gc *core.GlobalContext, fc *core.FileContext, previousQN, symbol string, isStatic bool, container *model.CodeElement) *model.CodeElement {
+	if previousQN == "" {
 		return nil
 	}
 
 	// 1. 尝试在当前层级直接匹配
-	targetQN := j.BuildQualifiedName(containerQN, symbol)
+	targetQN := j.BuildQualifiedName(previousQN, symbol)
 	if entry, ok := gc.FindByQualifiedName(targetQN); ok {
-		if j.checkVisibility(gc, fc, sourceElem, entry) {
+		if j.checkVisibility(gc, fc, container, entry) {
 			isIllegalStatic := isStatic && entry.Element.Kind == model.Field && !slices.Contains(entry.Element.Extra.Modifiers, "static")
 			if !isIllegalStatic {
 				return entry.Element
@@ -150,20 +150,21 @@ func (j *SymbolResolver) resolveInScopeHierarchy(gc *core.GlobalContext, fc *cor
 		}
 	}
 
-	containerEntry, ok := gc.FindByQualifiedName(containerQN)
+	previousEntry, ok := gc.FindByQualifiedName(previousQN)
 	if !ok {
 		return nil
 	}
 
 	// 2. 如果是类/接口，递归查找其继承链 (extends/implements)
-	if containerEntry.Element.Kind == model.Class || containerEntry.Element.Kind == model.Interface {
-		if inherited := j.resolveFromInheritance(gc, fc, containerEntry.Element, symbol, isStatic, sourceElem); inherited != nil {
+	previousEleKind := previousEntry.Element.Kind
+	if previousEleKind == model.Class || previousEleKind == model.Interface || previousEleKind == model.AnonymousClass {
+		if inherited := j.resolveFromInheritance(gc, fc, previousEntry.Element, symbol, isStatic, container); inherited != nil {
 			return inherited
 		}
 	}
 
 	// 3. 递归到上一级 Lexical Scope
-	return j.resolveInScopeHierarchy(gc, fc, containerEntry.ParentQN, symbol, isStatic, sourceElem)
+	return j.resolveInScopeHierarchy(gc, fc, previousEntry.ParentQN, symbol, isStatic, container)
 }
 
 // resolveFromInheritance 处理继承树查找
@@ -313,29 +314,39 @@ func (j *SymbolResolver) inferArgumentTypes(argsNode *sitter.Node, fc *core.File
 // 5. 校验与底层工具 (Utilities)
 // =============================================================================
 
-func (j *SymbolResolver) checkVisibility(gc *core.GlobalContext, fc *core.FileContext, source *model.CodeElement, target *core.DefinitionEntry) bool {
-	// 局部变量/形参无可见性限制
+func (j *SymbolResolver) checkVisibility(gc *core.GlobalContext, fc *core.FileContext, container *model.CodeElement, target *core.DefinitionEntry) bool {
+	// 1. 局部变量/形参/Lambda参数无限制
 	if target.Element.Kind == model.Variable {
 		return true
 	}
 
+	// 2. 检查是否属于同一个顶层类 (处理内部类、匿名类)
+	containerOutermost := j.getOutermostClassQN(container.QualifiedName)
+	targetOutermost := j.getOutermostClassQN(target.Element.QualifiedName)
+	if containerOutermost != "" && containerOutermost == targetOutermost {
+		return true
+	}
+
+	// 3. 显式修饰符判断
 	mods := target.Element.Extra.Modifiers
 	if slices.Contains(mods, "public") {
 		return true
 	}
 
-	targetPkg := j.getPackageFromQN(target.ParentQN)
+	// 4. 包级私有 (Default/Package-Private) 判定
+	// 注意：getPackageFromQN 应该确保拿到真正的 Java Package 名
+	targetPkg := j.getRealJavaPackage(target.Element.QualifiedName, gc)
 	if targetPkg == fc.PackageName {
 		return true
 	}
 
-	// Protected: 检查子类关系
+	// 5. Protected: 检查子类关系
 	if slices.Contains(mods, "protected") {
-		sourceClass := j.getOwnerClassQN(gc, source)
+		sourceClass := j.getOwnerClassQN(gc, container)
 		return j.isSubClassOf(gc, fc, sourceClass, target.ParentQN)
 	}
 
-	return false // Private 或跨包 Default 默认不可见
+	return false
 }
 
 func (j *SymbolResolver) typeMatches(defined, inferred string) bool {
@@ -433,11 +444,38 @@ func (j *SymbolResolver) getOwnerClassQN(gc *core.GlobalContext, elem *model.Cod
 	return ""
 }
 
-func (j *SymbolResolver) getPackageFromQN(qn string) string {
-	if idx := strings.LastIndex(qn, "."); idx != -1 {
-		return qn[:idx]
+// 获取最外层的类名 (例如把 A.B.C$1 还原为 A)
+func (j *SymbolResolver) getOutermostClassQN(qn string) string {
+	// 逻辑：在 Java 中，类名通常是大写开头
+	parts := strings.Split(qn, ".")
+	for i, part := range parts {
+		// 简单判定：首字母大写通常是类名 (Java 规范)
+		if len(part) > 0 && part[0] >= 'A' && part[0] <= 'Z' {
+			return strings.Join(parts[:i+1], ".")
+		}
 	}
 	return ""
+}
+
+// 从 QN 中剥离出真实的 Package
+func (j *SymbolResolver) getRealJavaPackage(qn string, gc *core.GlobalContext) string {
+	curr := qn
+	for {
+		idx := strings.LastIndex(curr, ".")
+		if idx == -1 {
+			return ""
+		}
+		curr = curr[:idx]
+
+		if entry, ok := gc.FindByQualifiedName(curr); ok {
+			if entry.Element.Kind == model.Package {
+				return curr
+			}
+		} else {
+			// 如果全局上下文没找到，继续向上找，直到匹配已知的 Package 模式
+			continue
+		}
+	}
 }
 
 func (j *SymbolResolver) isSubClassOf(gc *core.GlobalContext, fc *core.FileContext, sub, super string) bool {

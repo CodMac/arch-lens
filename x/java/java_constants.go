@@ -17,7 +17,7 @@ const (
 	MethodIsImplicit               = "java.method.is_implicit"        // 是否为隐式方法 (如编译器自动生成的构造函数) -> bool
 	MethodIsAnnotation             = "java.method.is_annotation"      // 是否为注解类型中的元素方法 -> bool
 	MethodDefaultValue             = "java.method.default_value"      // 注解元素的默认值 -> string
-	MethodReturnType               = "java.method.return_rtype"       // 方法返回值的原始类型文本 -> string
+	MethodReturnType               = "java.method.return_type"        // 方法返回值的原始类型文本 -> string
 	MethodParameters               = "java.method.parameters"         // 方法定义的参数列表 (含类型和名称、原始类型文本) -> []string
 	MethodThrowsTypes              = "java.method.throws"             // 方法声明抛出的异常类型列表 (原始类型文本) -> []string
 	VariableRawType                = "java.variable.raw_type"         // 局部变量的类型文本 -> string
@@ -61,7 +61,9 @@ const (
 	RelAssignEnclosingMethod = "java.rel.assign.enclosing_method" // 赋值发生的外部方法 QN (常用于 Lambda/内部类溯源)
 	RelCreateIsArray         = "java.rel.create.is_array"         // 是否为数组实例化
 	RelCreateVariableName    = "java.rel.create.variable_name"    // 接收实例化对象的变量名
-	RelUseReceiver           = "java.rel.use.receiver"            // 实例字段访问的接收者 (如 "this")
+	RelUseReceiver           = "java.rel.use.receiver"            // 实例字段访问的接收者 (如 "this、user")
+	RelUseReceiverTypeQN     = "java.rel.use.receiver_type_qn"    // 实例字段访问的接收者类型 (如 "User")
+	RelUseTargetName         = "java.rel.use.target_name"         // 实例字段访问的语句目标(如 "user.name -> name")
 	RelUseIsCapture          = "java.rel.use.is_capture"          // 是否为跨作用域的变量捕获引用
 	RelUseEnclosingMethod    = "java.rel.use.enclosing_method"    // 引用发生的外部方法 QN (常用于 Lambda/内部类溯源)
 	RelAnnotationTarget      = "java.rel.annotation.target"       //

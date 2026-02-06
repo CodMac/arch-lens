@@ -12,6 +12,7 @@ public class ClosureTest {
             }
         };
 
+        List<String> list = List.of("A1", "A2");
         list.forEach(item -> {
             System.out.println(context); // [Case 10] 应解析为外部类的 Field (Lambda 闭包)
         });

@@ -1553,7 +1553,7 @@ func TestJavaExtractor_VariableResolve(t *testing.T) {
 				{
 					relType:    model.Use,
 					sourceQN:   "com.example.rel.use.case1.ScopeTest.test(String)",
-					targetQN:   "com.example.rel.use.case1.ScopeTest.test(String).$block1.name",
+					targetQN:   "com.example.rel.use.case1.ScopeTest.test(String).block$1.name",
 					targetKind: model.Variable,
 				},
 				// [Case 2] if块外的 name 应该解析为方法的参数
@@ -1606,13 +1606,7 @@ func TestJavaExtractor_VariableResolve(t *testing.T) {
 					targetQN:   "com.example.rel.use.case3.pk1.Base.protectedVar",
 					targetKind: model.Field,
 				},
-				// [Case 6] Package 变量跨包不可见，Resolver 应返回 External 占位或标记
-				{
-					relType:    model.Use,
-					sourceQN:   "com.example.rel.use.case3.pk2.Sub.check()",
-					targetQN:   "packageVar", // 未能解析到 QN，保持短名
-					targetKind: model.Field,
-				},
+				// [Case 6] Package 变量跨包不可见，Resolver 应返回 nil
 			},
 		},
 		{
@@ -1647,14 +1641,14 @@ func TestJavaExtractor_VariableResolve(t *testing.T) {
 				// [Case 9] 匿名内部类访问自己的 context
 				{
 					relType:    model.Use,
-					sourceQN:   "com.example.rel.use.case5.ClosureTest.run().$1.run()",
-					targetQN:   "com.example.rel.use.case5.ClosureTest.run().$1.context",
+					sourceQN:   "com.example.rel.use.case5.ClosureTest.run().anonymousClass$1.run()",
+					targetQN:   "com.example.rel.use.case5.ClosureTest.run().anonymousClass$1.context",
 					targetKind: model.Field,
 				},
 				// [Case 10] Lambda 捕获外部类的 context
 				{
 					relType:    model.Use,
-					sourceQN:   "com.example.rel.use.case5.ClosureTest.run().$lambda1",
+					sourceQN:   "com.example.rel.use.case5.ClosureTest.run().lambda$1",
 					targetQN:   "com.example.rel.use.case5.ClosureTest.context",
 					targetKind: model.Field,
 				},
