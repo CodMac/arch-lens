@@ -202,8 +202,7 @@ func (e *Extractor) discoverActionRelations(fCtx *core.FileContext, gCtx *core.G
 
 		for _, cap := range match.Captures {
 			capName := q.CaptureNames()[cap.Index]
-			if !strings.HasSuffix(capName, "_target") && capName != "update_stmt" &&
-				capName != "explicit_constructor_stmt" && capName != "id_atom" {
+			if !strings.HasSuffix(capName, "_target") && capName != "explicit_constructor_stmt" && capName != "id_atom" {
 				continue
 			}
 
@@ -217,7 +216,7 @@ func (e *Extractor) discoverActionRelations(fCtx *core.FileContext, gCtx *core.G
 				// 2. 这里的 at.Target 已经在 mapAction 中经过了过滤和 resolve
 				ctxNode := at.ContextNode
 				if ctxNode == nil {
-					ctxNode = at.TargetNode
+					ctxNode = at.TargetNode.Parent()
 				}
 
 				rels = append(rels, &model.DependencyRelation{
@@ -386,43 +385,44 @@ func (e *Extractor) enrichCreateCore(rel *model.DependencyRelation, node, stmt *
 	}
 }
 
-func (e *Extractor) enrichAssignCore(rel *model.DependencyRelation, capNode, stmtNode *sitter.Node, src []byte) {
-	if stmtNode == nil {
+func (e *Extractor) enrichAssignCore(rel *model.DependencyRelation, node, stmt *sitter.Node, src []byte) {
+	if stmt == nil {
 		return
 	}
-	rel.Mores[RelAstKind] = stmtNode.Kind()
 
-	// 1. 原有的 TargetName 处理逻辑
-	var targetName string
-	if capNode != nil {
-		targetName = capNode.Utf8Text(src)
-	} else if nameNode := stmtNode.ChildByFieldName("name"); nameNode != nil {
-		targetName = nameNode.Utf8Text(src)
-	}
-	rel.Mores[RelAssignTargetName] = targetName
+	rel.Mores[RelAssignTargetName] = node.Utf8Text(src)
+	rel.Mores[RelRawText] = stmt.Utf8Text(src)
+	rel.Mores[RelAstKind] = node.Kind()
 
-	// 2. 原有的赋值逻辑
-	switch stmtNode.Kind() {
+	switch stmt.Kind() {
 	case "variable_declarator":
 		rel.Mores[RelAssignIsInitializer] = true
 		rel.Mores[RelAssignOperator] = "="
-		if valNode := stmtNode.ChildByFieldName("value"); valNode != nil {
-			rel.Mores[RelAssignValueExpression] = valNode.Utf8Text(src)
+		if val := stmt.ChildByFieldName("value"); val != nil {
+			rel.Mores[RelAssignValueExpression] = val.Utf8Text(src)
 		}
+
 	case "assignment_expression":
 		rel.Mores[RelAssignIsInitializer] = false
-		if opNode := stmtNode.ChildByFieldName("operator"); opNode != nil {
-			rel.Mores[RelAssignOperator] = opNode.Utf8Text(src)
+		if op := stmt.ChildByFieldName("operator"); op != nil {
+			rel.Mores[RelAssignOperator] = op.Utf8Text(src)
+		} else {
+			rel.Mores[RelAssignOperator] = "="
 		}
-		if rightNode := stmtNode.ChildByFieldName("right"); rightNode != nil {
-			rel.Mores[RelAssignValueExpression] = rightNode.Utf8Text(src)
+		if right := stmt.ChildByFieldName("right"); right != nil {
+			rel.Mores[RelAssignValueExpression] = right.Utf8Text(src)
 		}
+
 	case "update_expression":
-		raw := stmtNode.Utf8Text(src)
-		rel.Mores[RelAssignOperator] = "++"
-		if strings.Contains(raw, "--") {
+		rel.Mores[RelAssignIsInitializer] = false
+		txt := stmt.Utf8Text(src)
+		if strings.Contains(txt, "++") {
+			rel.Mores[RelAssignOperator] = "++"
+		}
+		if strings.Contains(txt, "--") {
 			rel.Mores[RelAssignOperator] = "--"
 		}
+		rel.Mores[RelAssignValueExpression] = ""
 	}
 
 	// 3. 处理 EnclosingMethod 和 IsCapture
@@ -509,7 +509,7 @@ func (e *Extractor) enrichAnnotationCore(rel *model.DependencyRelation) {
 }
 
 func (e *Extractor) enrichUseCore(rel *model.DependencyRelation, node, stmt *sitter.Node, src []byte) {
-	if node == nil {
+	if node == nil || stmt == nil {
 		return
 	}
 
@@ -517,13 +517,49 @@ func (e *Extractor) enrichUseCore(rel *model.DependencyRelation, node, stmt *sit
 	rel.Mores[RelContext] = stmt.Kind()
 	rel.Mores[RelRawText] = stmt.Utf8Text(src)
 
-	// 初始化默认值
-	rel.Mores[RelUseIsCapture] = false
+	// --- 核心优化：多维度提取 Receiver ---
+	parent := node.Parent()
+	if parent != nil {
+		switch parent.Kind() {
+		case "field_access":
+			// 处理 user.name 或 this.field
+			if obj := parent.ChildByFieldName("object"); obj != nil {
+				rel.Mores[RelUseReceiver] = obj.Utf8Text(src)
+				rel.Mores[RelUseTargetName] = node.Utf8Text(src)
+			}
+		case "scoped_identifier":
+			// 处理 ClassName.CONSTANT
+			if scope := parent.ChildByFieldName("scope"); scope != nil {
+				rel.Mores[RelUseReceiver] = scope.Utf8Text(src)
+				rel.Mores[RelUseTargetName] = node.Utf8Text(src)
+			}
+		case "method_invocation":
+			// 如果标识符本身是方法名（由 call_target 处理时），这里可以提取 object
+			if obj := parent.ChildByFieldName("object"); obj != nil {
+				rel.Mores[RelUseReceiver] = obj.Utf8Text(src)
+			}
+		}
+	}
 
-	if stmt.Kind() == "field_access" {
-		obj := stmt.ChildByFieldName("object")
-		if obj != nil && obj.Utf8Text(src) == "this" {
+	// --- 兜底逻辑：隐式 this 判定 ---
+	if _, exists := rel.Mores[RelUseReceiver]; !exists {
+		// 如果 Target 是字段，且没有显式的接收者，则默认为 this
+		if rel.Target != nil && rel.Target.Kind == model.Field {
 			rel.Mores[RelUseReceiver] = "this"
+			rel.Mores[RelUseTargetName] = node.Utf8Text(src)
+		}
+	}
+
+	// --- 提取接收者类型 QN ---
+	// 这里利用你之前从 Target.Extra 中收集到的 RawType
+	if rel.Target != nil && rel.Target.Extra != nil {
+		keys := []string{FieldRawType, VariableRawType}
+		for _, k := range keys {
+			if rt, ok := rel.Target.Extra.Mores[k].(string); ok {
+				// e.clean 会去掉泛型和修饰符，保留纯粹的类型名
+				rel.Mores[RelUseReceiverType] = e.clean(rt)
+				break
+			}
 		}
 	}
 
@@ -646,8 +682,13 @@ func (e *Extractor) mapAction(capName string, node *sitter.Node, fCtx *core.File
 		ctx := e.findNearestKind(node, "cast_expression", "instanceof_expression")
 		return []ActionTarget{{model.Cast, node, ctx, resolve(text, model.Class)}}
 
-	case "assign_target", "update_stmt":
+	case "assign_target":
+		// 1. 向上寻找赋值的上下文容器
 		ctx := e.findNearestKind(node, "assignment_expression", "variable_declarator", "update_expression")
+		if ctx == nil {
+			return nil
+		}
+
 		return []ActionTarget{{model.Assign, node, ctx, resolve(text, model.Variable)}}
 
 	case "id_atom":
@@ -656,7 +697,7 @@ func (e *Extractor) mapAction(capName string, node *sitter.Node, fCtx *core.File
 			return nil
 		}
 
-		ctx := e.findNearestKind(node, "binary_expression", "array_access", "cast_expression", "enhanced_for_statement", "field_access", "lambda_expression", "assignment_expression")
+		ctx := e.findNearestKind(node, "expression_statement", "local_variable_declaration", "enhanced_for_statement", "binary_expression", "cast_expression", "array_access", "parenthesized_expression", "field_access", "lambda_expression", "assignment_expression")
 		return []ActionTarget{{model.Use, node, ctx, resolve(text, model.Variable)}}
 
 	case "throw_target":

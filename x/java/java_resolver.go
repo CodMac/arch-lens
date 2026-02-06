@@ -60,7 +60,7 @@ func (j *SymbolResolver) Resolve(gc *core.GlobalContext, fc *core.FileContext, n
 // resolveVariable 处理变量查找，支持本地作用域回溯和类成员继承查找
 func (j *SymbolResolver) resolveVariable(gc *core.GlobalContext, fc *core.FileContext, node *sitter.Node, symbol string) *model.CodeElement {
 	cleanName := strings.TrimSpace(symbol)
-	containerTypes := []model.ElementKind{model.Method, model.ScopeBlock, model.Lambda}
+	containerTypes := []model.ElementKind{model.Method, model.ScopeBlock, model.Lambda, model.Class, model.AnonymousClass}
 	container := j.determinePreciseContainer(fc, node, containerTypes)
 	if container == nil {
 		return nil

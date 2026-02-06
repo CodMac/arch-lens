@@ -62,7 +62,7 @@ const (
 	RelCreateIsArray         = "java.rel.create.is_array"         // 是否为数组实例化
 	RelCreateVariableName    = "java.rel.create.variable_name"    // 接收实例化对象的变量名
 	RelUseReceiver           = "java.rel.use.receiver"            // 实例字段访问的接收者 (如 "this、user")
-	RelUseReceiverTypeQN     = "java.rel.use.receiver_type_qn"    // 实例字段访问的接收者类型 (如 "User")
+	RelUseReceiverType       = "java.rel.use.receiver_type"       // 静态字段访问的类型 QN
 	RelUseTargetName         = "java.rel.use.target_name"         // 实例字段访问的语句目标(如 "user.name -> name")
 	RelUseIsCapture          = "java.rel.use.is_capture"          // 是否为跨作用域的变量捕获引用
 	RelUseEnclosingMethod    = "java.rel.use.enclosing_method"    // 引用发生的外部方法 QN (常用于 Lambda/内部类溯源)
@@ -107,7 +107,6 @@ const (
 	RelCreateIsConstructorChain  = "java.rel.create.is_constructor_chain"  // 是否为构造函数链调用 (explicit super/this call)
 	RelUseParentExpression       = "java.rel.use.parent_expression"        // 包含该引用的父级表达式文本 (如 "local + 2")
 	RelUseUsageRole              = "java.rel.use.usage_role"               // 使用的角色 (如 "operand", "iterator_source", "array_source", "argument")
-	RelUseReceiverType           = "java.rel.use.receiver_type"            // 静态字段访问的类型 QN
 	RelUseIsStatic               = "java.rel.use.is_static"                // 是否为静态访问
 	RelUseIndexExpression        = "java.rel.use.index_expression"         // 数组访问的索引表达式
 	RelUseCallSite               = "java.rel.use.call_site"                // 作为参数传递时，被调用的方法名

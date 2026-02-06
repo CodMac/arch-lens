@@ -771,7 +771,7 @@ func TestJavaExtractor_AssignClass(t *testing.T) {
 			targetName: "data",
 			value:      "new DataNode()", // 匹配第一处赋值
 			checkMores: func(t *testing.T, m map[string]interface{}) {
-				assert.Equal(t, "variable_declarator", m[java.RelAstKind])
+				assert.Equal(t, "identifier", m[java.RelAstKind])
 			},
 		},
 		{
@@ -779,7 +779,7 @@ func TestJavaExtractor_AssignClass(t *testing.T) {
 			targetName: "data",
 			value:      "null", // 匹配第二处赋值
 			checkMores: func(t *testing.T, m map[string]interface{}) {
-				assert.Equal(t, "assignment_expression", m[java.RelAstKind])
+				assert.Equal(t, "identifier", m[java.RelAstKind])
 			},
 		},
 	}
@@ -898,6 +898,8 @@ func TestJavaExtractor_Use(t *testing.T) {
 		t.Fatalf("Extraction failed: %v", err)
 	}
 
+	printRelations(allRelations)
+
 	// 基础 QN 定义
 	baseQN := "com.example.rel.UseRelationSuite"
 	methodQN := baseQN + ".testUseCases(int)"
@@ -978,8 +980,8 @@ func TestJavaExtractor_Use(t *testing.T) {
 				if m[java.RelUseIsCapture] != nil {
 					assert.Equal(t, true, m[java.RelUseIsCapture])
 				}
-				assert.Equal(t, "fieldVar", m[java.RelRawText])
-				assert.Equal(t, "identifier", m[java.RelContext])
+				assert.Equal(t, "System.out.println(fieldVar);", m[java.RelRawText])
+				assert.Equal(t, "expression_statement", m[java.RelContext])
 			},
 		},
 		{
@@ -1732,7 +1734,7 @@ func runPhase1Collection(t *testing.T, files []string) *core.GlobalContext {
 	col := java.NewJavaCollector()
 
 	for _, file := range files {
-		rootNode, sourceBytes, err := javaParser.ParseFile(file, false, false)
+		rootNode, sourceBytes, err := javaParser.ParseFile(file, false, true)
 		if err != nil {
 			t.Fatalf("Failed to parse file %s: %v", file, err)
 		}
