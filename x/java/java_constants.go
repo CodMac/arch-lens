@@ -53,6 +53,7 @@ const (
 	RelCallIsChained         = "java.rel.call.is_chained"         // 是否属于调用链的一部分
 	RelCallIsFunctional      = "java.rel.call.is_functional"      // 是否为方法引用 (eg,: this::simpleMethod)
 	RelCallEnclosingMethod   = "java.rel.call.enclosing_method"   // 调用发生的外部方法 QN (常用于 Lambda/内部类溯源)
+	RelAssignReceiver        = "java.rel.assign.receiver"         // 赋值接收者 (如 "this", "super", 或变量名)
 	RelAssignTargetName      = "java.rel.assign.target_name"      // 赋值语句目标 (谁被改变了)
 	RelAssignOperator        = "java.rel.assign.operator"         // 赋值运算符，如 "=", "+=", "++"
 	RelAssignIsInitializer   = "java.rel.assign.is_initializer"   // 是否为声明时的初始化赋值 (如 int i = 0)
@@ -85,7 +86,6 @@ const (
 	RelCallReceiverExpression    = "java.rel.call.receiver_expression"     // 链式调用中产生接收者的表达式文本 (如 "getList()")
 	RelCallIsInherited           = "java.rel.call.is_inherited"            // 调用的是否为继承自父类的方法
 	RelCallTypeArguments         = "java.rel.call.type_arguments"          // 调用的泛型实参文本 (如 "String")
-	RelAssignReceiver            = "java.rel.assign.receiver"              // 赋值接收者 (如 "this", "super", 或变量名)
 	RelAssignIsCompound          = "java.rel.assign.is_compound"           // 是否为复合赋值 (如 +=, -=)
 	RelAssignIsChained           = "java.rel.assign.is_chained"            // 是否为链式连续赋值 (如 a = b = c = 1)
 	RelAssignIsPostfix           = "java.rel.assign.is_postfix"            // 是否为后置更新 (如 i++)

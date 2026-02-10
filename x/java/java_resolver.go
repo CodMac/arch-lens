@@ -42,12 +42,12 @@ func (j *SymbolResolver) RegisterPackage(gc *core.GlobalContext, packageName str
 }
 
 // Resolve 为外部统一入口
-func (j *SymbolResolver) Resolve(gc *core.GlobalContext, fc *core.FileContext, node *sitter.Node, symbol string, kind model.ElementKind) *model.CodeElement {
+func (j *SymbolResolver) Resolve(gc *core.GlobalContext, fc *core.FileContext, node *sitter.Node, receiver, symbol string, kind model.ElementKind) *model.CodeElement {
 	switch kind {
 	case model.Variable:
-		return j.resolveVariable(gc, fc, node, symbol)
+		return j.resolveVariable(gc, fc, node, receiver, symbol)
 	case model.Method:
-		return j.resolveMethod(gc, fc, node, symbol)
+		return j.resolveMethod(gc, fc, node, receiver, symbol)
 	default:
 		return j.resolveStructure(gc, fc, symbol, kind)
 	}
@@ -58,62 +58,84 @@ func (j *SymbolResolver) Resolve(gc *core.GlobalContext, fc *core.FileContext, n
 // =============================================================================
 
 // resolveVariable 处理变量查找，支持本地作用域回溯和类成员继承查找
-func (j *SymbolResolver) resolveVariable(gc *core.GlobalContext, fc *core.FileContext, node *sitter.Node, symbol string) *model.CodeElement {
-	cleanName := strings.TrimSpace(symbol)
-	containerTypes := []model.ElementKind{model.Method, model.ScopeBlock, model.Lambda, model.Class, model.AnonymousClass}
-	container := j.determinePreciseContainer(fc, node, containerTypes)
-	if container == nil {
-		return nil
-	}
+func (j *SymbolResolver) resolveVariable(gc *core.GlobalContext, fc *core.FileContext, node *sitter.Node, receiver string, symbol string) *model.CodeElement {
+	if receiver != "" {
+		// 场景 A: this 或 super
+		if receiver == "this" || receiver == "super" {
+			container := j.determinePreciseContainer(fc, node, []model.ElementKind{model.Class, model.AnonymousClass})
+			if container == nil {
+				return nil
+			}
+			isStatic := slices.Contains(container.Extra.Modifiers, "static")
 
-	isStatic := slices.Contains(container.Extra.Modifiers, "static")
-	previousQN := container.QualifiedName
-	return j.resolveInScopeHierarchy(gc, fc, previousQN, cleanName, isStatic, container)
-}
+			startEntry := container
+			if receiver == "super" {
+				return j.resolveFromInheritance(gc, fc, container, symbol, isStatic, container)
+			}
+			return j.resolveInScopeHierarchy(gc, fc, startEntry.QualifiedName, symbol, isStatic, container)
+		}
 
-// resolveMethod 处理方法查找，利用 Collector 的元数据进行重载过滤
-func (j *SymbolResolver) resolveMethod(gc *core.GlobalContext, fc *core.FileContext, node *sitter.Node, symbol string) *model.CodeElement {
-	cleanName := strings.TrimSpace(symbol)
+		// 场景 B: 尝试解析为类名 (静态访问)
+		// 先清理 receiver (如 List<String> -> List)
+		cleanedReceiver := j.clean(receiver)
+		if entries := j.preciseResolve(gc, fc, cleanedReceiver); len(entries) > 0 {
+			// 如果解析结果是类/接口，则按静态字段查找
+			if entries[0].Element.Kind == model.Class || entries[0].Element.Kind == model.Interface {
+				return j.resolveInScopeHierarchy(gc, fc, entries[0].Element.QualifiedName, symbol, true, entries[0].Element)
+			}
+		}
 
-	// 1. 启发式分析：识别调用处的实参个数与大致类型
-	argCount := -1
-	var inferredArgTypes []string
-	if node != nil {
-		if callNode := j.findInvocationNode(node); callNode != nil {
-			if argsNode := callNode.ChildByFieldName("arguments"); argsNode != nil {
-				argCount = int(argsNode.NamedChildCount())
-				inferredArgTypes = j.inferArgumentTypes(argsNode, fc)
+		// 场景 C: 跨对象访问 (data.age)
+		// 先解析 receiver 变量本身拿到它的类型
+		recvVar := j.resolveVariable(gc, fc, node, "", receiver)
+		if recvVar != nil && recvVar.Extra != nil {
+			if typeQN, ok := recvVar.Extra.Mores[VariableRawType].(string); ok {
+				return j.resolveInScopeHierarchy(gc, fc, j.clean(typeQN), symbol, false, recvVar)
 			}
 		}
 	}
 
-	// 2. 确定起点：获取当前节点所在的容器类或方法
-	container := j.determinePreciseContainer(fc, node, []model.ElementKind{model.Class, model.Method})
-	var startQN string
-	if container != nil {
-		startQN = container.QualifiedName
+	// 无 receiver：按原有作用域链查找
+	container := j.determinePreciseContainer(fc, node, []model.ElementKind{model.Method, model.Class, model.ScopeBlock})
+	if container == nil {
+		return nil
 	}
+	isStatic := slices.Contains(container.Extra.Modifiers, "static")
+	return j.resolveInScopeHierarchy(gc, fc, container.QualifiedName, symbol, isStatic, container)
+}
 
-	// 3. 递归回溯：搜索本类 -> 继承链 -> 父级作用域
-	// 这里直接复用层级查找逻辑
-	methodElem := j.resolveInScopeHierarchy(gc, fc, startQN, cleanName, false, container)
+// resolveMethod 处理方法查找，利用 Collector 的元数据进行重载过滤
+func (j *SymbolResolver) resolveMethod(gc *core.GlobalContext, fc *core.FileContext, node *sitter.Node, receiver string, symbol string) *model.CodeElement {
+	var container *model.CodeElement
+	var isStaticCall bool
 
-	// 4. 重载匹配：如果在全局找到多个同名 entry，进行过滤
-	if methodElem == nil || methodElem.IsFormExternal {
-		entries := j.preciseResolve(gc, fc, cleanName)
-		if len(entries) > 0 {
-			return j.pickBestOverloadEnhanced(entries, argCount, inferredArgTypes)
+	if receiver != "" {
+		cleanedReceiver := j.clean(receiver)
+		// 1. 静态类名访问?
+		if entries := j.preciseResolve(gc, fc, cleanedReceiver); len(entries) > 0 && (entries[0].Element.Kind == model.Class || entries[0].Element.Kind == model.Interface) {
+			container = entries[0].Element
+			isStaticCall = true
+		} else if receiver == "this" || receiver == "super" {
+			// 2. this/super 访问
+			container = j.determinePreciseContainer(fc, node, []model.ElementKind{model.Class})
+		} else {
+			// 3. 实例变量访问?
+			if recvObj := j.resolveVariable(gc, fc, node, "", receiver); recvObj != nil {
+				if typeQN, ok := recvObj.Extra.Mores[VariableRawType].(string); ok {
+					container = j.resolveStructure(gc, fc, j.clean(typeQN), model.Class)
+				}
+			}
 		}
-	} else {
-		return methodElem
 	}
 
-	// 5. 兜底处理：尝试利用 Import 还原 QualifiedName
-	qualifiedName := cleanName
-	if imps, ok := fc.Imports[cleanName]; ok && len(imps) > 0 {
-		qualifiedName = imps[0].RawImportPath
+	if container == nil {
+		// 无 receiver：默认当前容器
+		if c := j.determinePreciseContainer(fc, node, []model.ElementKind{model.Class}); c != nil {
+			container = c
+		}
 	}
-	return &model.CodeElement{Name: cleanName, QualifiedName: qualifiedName, Kind: model.Method, IsFormExternal: true}
+
+	return j.resolveInScopeHierarchy(gc, fc, container.QualifiedName, symbol, isStaticCall, container)
 }
 
 // resolveStructure 处理类、接口、包等结构性符号
@@ -512,4 +534,34 @@ func (j *SymbolResolver) findInvocationNode(n *sitter.Node) *sitter.Node {
 
 func (j *SymbolResolver) getNodeContent(n *sitter.Node, src []byte) string {
 	return strings.TrimSpace(string(src[n.StartByte():n.EndByte()]))
+}
+
+func (j *SymbolResolver) clean(symbol string) string {
+	if symbol == "" {
+		return ""
+	}
+
+	// 1. 清理换行符和多余空格
+	res := strings.ReplaceAll(symbol, "\n", "")
+	res = strings.ReplaceAll(res, "\r", "")
+	res = strings.TrimSpace(res)
+
+	// 2. 泛型擦除: List<String, Integer> -> List
+	// 找到第一个 '<' 并截断
+	if idx := strings.Index(res, "<"); idx != -1 {
+		res = res[:idx]
+	}
+
+	// 3. 清理方法参数列表: getName(String, int) -> getName
+	// 当 symbol 作为 QN 的一部分传入时，我们需要剥离括号内容
+	if idx := strings.Index(res, "("); idx != -1 {
+		res = res[:idx]
+	}
+
+	// 4. 清理数组符号: String[] -> String
+	// 在寻找类定义时，数组类型应映射到其基本元素类
+	res = strings.ReplaceAll(res, "[]", "")
+
+	// 5. 再次 Trim，防止截断后产生新的边缘空格
+	return strings.TrimSpace(res)
 }

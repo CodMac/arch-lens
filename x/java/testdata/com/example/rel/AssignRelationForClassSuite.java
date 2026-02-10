@@ -1,83 +1,53 @@
 package com.example.rel;
 
-import java.util.ArrayList;
-import java.util.List;
-
 public class AssignRelationForClassSuite {
-    private Object globalObj;
+    // 字段声明初始化
+    // Source: com.example.rel.AssignRelationForClassSuite.count (FIELD)
+    // Target: com.example.rel.AssignRelationForClassSuite.count (FIELD)
+    // Mores: { "is_initializer": true, "target_name": "count", "value_expression": "0" }
+    private int count = 0;
 
-    public void testClassAssignments() {
-        // 1. 实例化并赋值 (Object Creation)
-        // Source: com.example.rel.AssignRelationForClassSuite.testClassAssignments() (METHOD)
-        // Target: com.example.rel.AssignRelationForClassSuite.testClassAssignments().list (VARIABLE)
-        // Mores: {
-        //   "java.rel.raw_text": "list = new ArrayList<>()",
-        //   "java.rel.ast_kind": "variable_declarator",
-        //   "java.rel.context": "variable_declarator",
-        //   "java.rel.assign.target_name": "list",
-        //   "java.rel.assign.is_initializer": true,
-        //   "java.rel.assign.operator": "=",
-        //   "java.rel.assign.value_expression": "new ArrayList<>()"
-        // }
-        List<String> list = new ArrayList<>();
+    // 静态字段
+    private static String TAG = "ORIGIN";
 
-        // 2. 将引用赋值给另一个变量 (Reference Copy)
-        // Source: com.example.rel.AssignRelationForClassSuite.testClassAssignments() (METHOD)
-        // Target: com.example.rel.AssignRelationForClassSuite.testClassAssignments().otherList (VARIABLE)
-        // Mores: {
-        //   "java.rel.raw_text": "otherList = list",
-        //   "java.rel.ast_kind": "variable_declarator",
-        //   "java.rel.context": "variable_declarator",
-        //   "java.rel.assign.target_name": "otherList",
-        //   "java.rel.assign.is_initializer": true,
-        //   "java.rel.assign.operator": "=",
-        //   "java.rel.assign.value_expression": "list"
-        // }
-        List<String> otherList = list;
+    public void testAssignments(int param) {
+        // 1. 局部变量初始化 (Local Variable)
+        // Source: com.example.rel.AssignRelationForClassSuite.testAssignments(int) (METHOD)
+        // Target: com.example.rel.AssignRelationForClassSuite.testAssignments(int).local (VARIABLE)
+        // Mores: { "is_initializer": true, "target_name": "local", "value_expression": "10", "raw_text": "int local = 10" }
+        int local = 10;
 
-        // 3. 跨对象字段赋值 (Field Access)
-        // Source: com.example.rel.AssignRelationForClassSuite.testClassAssignments() (METHOD)
+        // 2. 本类字段赋值 (Implicit This)
+        // Source: com.example.rel.AssignRelationForClassSuite.testAssignments(int) (METHOD)
+        // Target: com.example.rel.AssignRelationForClassSuite.count (FIELD)
+        // Mores: { "is_initializer": false, "target_name": "count", "operator": "+=", "value_expression": "5", "receiver": "this" }
+        count += 5;
+
+        // 3. 本类字段显式赋值 (Explicit This)
+        // Source: com.example.rel.AssignRelationForClassSuite.testAssignments(int) (METHOD)
+        // Target: com.example.rel.AssignRelationForClassSuite.count (FIELD)
+        // Mores: { "is_initializer": false, "target_name": "count", "operator": "=", "value_expression": "100", "receiver": "this" }
+        this.count = 100;
+
+        // 4. 静态字段赋值 (Static Field)
+        // Source: com.example.rel.AssignRelationForClassSuite.testAssignments(int) (METHOD)
+        // Target: com.example.rel.AssignRelationForClassSuite.TAG (FIELD)
+        // Mores: { "is_initializer": false, "target_name": "TAG", "operator": "=", "value_expression": "\"UPDATED\"", "receiver": "AssignRelationForClassSuite" }
+        AssignRelationForClassSuite.TAG = "UPDATED";
+
+        // 5. 跨对象字段赋值 (External Object Field)
+        // Source: com.example.rel.AssignRelationForClassSuite.testAssignments(int) (METHOD)
         // Target: com.example.rel.AssignRelationForClassSuite.DataNode.name (FIELD)
-        // Mores: {
-        //   "java.rel.raw_text": "data.name = \"Hello\"",
-        //   "java.rel.ast_kind": "assignment_expression",
-        //   "java.rel.context": "expression_statement",
-        //   "java.rel.assign.target_name": "name",
-        //   "java.rel.assign.operator": "=",
-        //   "java.rel.assign.value_expression": "\"Hello\""
-        // }
-        DataNode data = new DataNode();
-        data.name = "Hello";
-        String dataName =  data.name;
+        // Mores: { "is_initializer": false, "target_name": "name", "operator": "=", "value_expression": "\"NewName\"", "receiver": "node" }
+        DataNode node = new DataNode();
+        node.name = "NewName";
 
-        // 4. 方法返回结果赋值
-        // Source: com.example.rel.AssignRelationForClassSuite.testClassAssignments() (METHOD)
-        // Target: com.example.rel.AssignRelationForClassSuite.globalObj (FIELD)
-        // Mores: {
-        //   "java.rel.raw_text": "this.globalObj = fetchObject()",
-        //   "java.rel.ast_kind": "assignment_expression",
-        //   "java.rel.context": "expression_statement",
-        //   "java.rel.assign.target_name": "globalObj",
-        //   "java.rel.assign.operator": "=",
-        //   "java.rel.assign.value_expression": "fetchObject()"
-        // }
-        this.globalObj = fetchObject();
-
-        // 5. Null 赋值
-        // Source: com.example.rel.AssignRelationForClassSuite.testClassAssignments() (METHOD)
-        // Target: com.example.rel.AssignRelationForClassSuite.testClassAssignments().data (VARIABLE)
-        // Mores: {
-        //   "java.rel.raw_text": "data = null",
-        //   "java.rel.ast_kind": "assignment_expression",
-        //   "java.rel.context": "expression_statement",
-        //   "java.rel.assign.target_name": "data",
-        //   "java.rel.assign.operator": "=",
-        //   "java.rel.assign.value_expression": "null"
-        // }
-        data = null;
+        // 6. 参数二次赋值 (Parameter)
+        // Source: com.example.rel.AssignRelationForClassSuite.testAssignments(int) (METHOD)
+        // Target: com.example.rel.AssignRelationForClassSuite.testAssignments(int).param (VARIABLE)
+        // Mores: { "is_initializer": false, "target_name": "param", "operator": "=", "value_expression": "200" }
+        param = 200;
     }
-
-    private Object fetchObject() { return new Object(); }
 
     class DataNode {
         public String name;
