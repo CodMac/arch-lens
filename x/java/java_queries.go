@@ -27,25 +27,26 @@ const JavaActionQuery = `
   ; --普通标识符读取, 后续过滤
   (identifier) @id_atom
 
-  ; 6. 赋值动作 (Assign)
+  ; 6. 赋值动作 (统一捕获左值标识符)
+  ; 匹配普通赋值: a = 1, this.a = 1, arr[0] = 1
   (assignment_expression 
     left: [
         (identifier) @assign_target
         (field_access field: (identifier) @assign_target)
         (array_access array: (identifier) @assign_target)
-    ]) @assign_stmt
+    ])
 
-  ; --自增/自减 (Assign)
+  ; 匹配自增自减: count++, --count
   (update_expression 
     [
         (identifier) @assign_target
         (field_access field: (identifier) @assign_target)
-    ]) @update_stmt
+    ])
 
-  ; 7. 变量声明中的初始化赋值 (Assign/Create)
+  ; 7. 变量声明中的初始化: int a = 10;
   (variable_declarator 
     name: (identifier) @assign_target
-    value: (_) @assign_value) @variable_stmt
+    value: (_))
 
   ; 8. 抛出异常 (Throw)
   (throw_statement

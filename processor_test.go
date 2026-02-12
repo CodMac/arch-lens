@@ -94,7 +94,7 @@ func TestFileProcessor_ProcessFiles(t *testing.T) {
 
 	// 6. 验证全局上下文索引
 	t.Run("VerifyGlobalContext", func(t *testing.T) {
-		if _, ok := gCtx.DefinitionsByQN["com.test.Base"]; !ok {
+		if _, ok := gCtx.FindByQualifiedName("com.test.Base"); !ok {
 			t.Error("GlobalContext missing index for com.test.Base")
 		}
 	})

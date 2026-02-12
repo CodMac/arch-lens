@@ -2,6 +2,9 @@ package core
 
 import (
 	"fmt"
+
+	"github.com/CodMac/arch-lens/model"
+	sitter "github.com/tree-sitter/go-tree-sitter"
 )
 
 // --- 语言特有的符号解析接口 ---
@@ -12,7 +15,7 @@ type SymbolResolver interface {
 	BuildQualifiedName(parentQN, name string) string
 
 	// Resolve 具体的解析逻辑：处理局部、导入、通配符等逻辑
-	Resolve(gc *GlobalContext, fc *FileContext, symbol string) []*DefinitionEntry
+	Resolve(gc *GlobalContext, fc *FileContext, node *sitter.Node, receiver, symbol string, kind model.ElementKind) *model.CodeElement
 
 	// RegisterPackage 注册包/命名空间逻辑
 	// (Java 需要拆分点号，Go 只需要单层)

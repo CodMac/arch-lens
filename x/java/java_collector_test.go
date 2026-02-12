@@ -37,11 +37,9 @@ func printCodeElements(fCtx *core.FileContext) {
 	}
 
 	fmt.Printf("Package: %s\n", fCtx.PackageName)
-	for _, defs := range fCtx.DefinitionsBySN {
-		for _, def := range defs {
-			fmt.Printf("Short: %s -> Kind: %s, QN: %s\n", def.Element.Name, def.Element.Kind, def.Element.QualifiedName)
-			fmt.Printf("      -> Extra: %v\n", def.Element.Extra.Mores)
-		}
+	for _, def := range fCtx.Definitions {
+		fmt.Printf("Short: %s -> Kind: %s, QN: %s\n", def.Element.Name, def.Element.Kind, def.Element.QualifiedName)
+		fmt.Printf("      -> Extra: %v\n", def.Element.Extra.Mores)
 	}
 }
 
@@ -123,7 +121,7 @@ func TestJavaCollector_AbstractBaseEntity(t *testing.T) {
 			t.Errorf("Expected Field, got %s", elem.Kind)
 		}
 
-		if tpe := elem.Extra.Mores[java.FieldType]; tpe != "ID" {
+		if tpe := elem.Extra.Mores[java.FieldRawType]; tpe != "ID" {
 			t.Errorf("Expected type ID, got %v", tpe)
 		}
 
@@ -141,7 +139,7 @@ func TestJavaCollector_AbstractBaseEntity(t *testing.T) {
 		}
 
 		elem := defs[0].Element
-		if tpe := elem.Extra.Mores[java.FieldType]; tpe != "Date" {
+		if tpe := elem.Extra.Mores[java.FieldRawType]; tpe != "Date" {
 			t.Errorf("Expected type Date, got %v", tpe)
 		}
 
@@ -198,7 +196,7 @@ func TestJavaCollector_AbstractBaseEntity(t *testing.T) {
 		}
 
 		fieldElem := fieldDefs[0].Element
-		if tpe := fieldElem.Extra.Mores[java.FieldType]; tpe != "String" {
+		if tpe := fieldElem.Extra.Mores[java.FieldRawType]; tpe != "String" {
 			t.Errorf("tableName expected String, got %v", tpe)
 		}
 	})
@@ -354,7 +352,7 @@ func TestJavaCollector_CallbackManager(t *testing.T) {
 		}
 
 		elem := defs[0].Element
-		if tpe := elem.Extra.Mores[java.VariableType]; tpe != "Runnable" {
+		if tpe := elem.Extra.Mores[java.VariableRawType]; tpe != "Runnable" {
 			t.Errorf("Expected type Runnable, got %v", tpe)
 		}
 	})
@@ -472,7 +470,7 @@ func TestJavaCollector_ConfigService(t *testing.T) {
 		}
 
 		vElem := vDefs[0].Element
-		if tpe := vElem.Extra.Mores[java.VariableType]; tpe != "Object..." {
+		if tpe := vElem.Extra.Mores[java.VariableRawType]; tpe != "Object..." {
 			t.Errorf("Expected type Object..., got %v", tpe)
 		}
 	})
@@ -857,7 +855,7 @@ func TestJavaCollector_NotificationException(t *testing.T) {
 			t.Error("serialVersionUID should be identified as a constant")
 		}
 
-		fieldType := elem.Extra.Mores[java.FieldType].(string)
+		fieldType := elem.Extra.Mores[java.FieldRawType].(string)
 		if fieldType != "long" {
 			t.Errorf("Expected type long, got %s", fieldType)
 		}
@@ -938,7 +936,7 @@ func TestJavaCollector_User(t *testing.T) {
 		if isConst, _ := elem.Extra.Mores[java.FieldIsConstant].(bool); !isConst {
 			t.Error("DEFAULT_ID should be identified as a Constant (static + final)")
 		}
-		if fType := elem.Extra.Mores[java.FieldType].(string); fType != "String" {
+		if fType := elem.Extra.Mores[java.FieldRawType].(string); fType != "String" {
 			t.Errorf("Expected field type String, got %s", fType)
 		}
 	})
@@ -1078,7 +1076,7 @@ func TestJavaCollector_UserServiceImpl(t *testing.T) {
 		if len(rDefs) == 0 {
 			t.Errorf("Local variable 'results' not found with QN: %s", resultsQN)
 		} else {
-			vType := rDefs[0].Element.Extra.Mores[java.VariableType].(string)
+			vType := rDefs[0].Element.Extra.Mores[java.VariableRawType].(string)
 			if vType != "List<AbstractBaseEntity<String>>" {
 				t.Errorf("Incorrect type for results: %s", vType)
 			}
@@ -1090,7 +1088,7 @@ func TestJavaCollector_UserServiceImpl(t *testing.T) {
 		if len(cDefs) == 0 {
 			t.Errorf("Local variable 'converted' not found")
 		} else {
-			vType := cDefs[0].Element.Extra.Mores[java.VariableType].(string)
+			vType := cDefs[0].Element.Extra.Mores[java.VariableRawType].(string)
 			if vType != "String" {
 				t.Errorf("Expected type String for 'converted', got %s", vType)
 			}
@@ -1508,7 +1506,7 @@ func TestJavaCollector_MethodOverloading(t *testing.T) {
 	// 3. 验证 FileContext 里的 SN (Short Name) 聚合
 	t.Run("Verify SN Aggregation", func(t *testing.T) {
 		// exec 这个名字应该对应 3 个定义
-		entries, exists := fCtx.DefinitionsBySN["exec"]
+		entries, exists := fCtx.FindByShortName("exec")
 		if !exists {
 			t.Fatalf("SN 'exec' not found in DefinitionsBySN")
 		}
@@ -1572,7 +1570,7 @@ func TestJavaCollector_ParameterScope(t *testing.T) {
 			t.Fatalf("Varargs parameter 'labels' not found")
 		}
 
-		vType := defs[0].Element.Extra.Mores[java.VariableType].(string)
+		vType := defs[0].Element.Extra.Mores[java.VariableRawType].(string)
 		// 验证你的 extractTypeString 是否正确处理了 "..."
 		if !strings.Contains(vType, "...") {
 			t.Errorf("Expected type with '...', got %s", vType)
@@ -1682,7 +1680,8 @@ func TestJavaCollector_ScopeAndShadowing(t *testing.T) {
 			// 根据你的 QN 生成逻辑，这些参数属于对应的 lambda$n
 			// 需要通过 printCodeElements 确认具体的 lambda 序号，这里假设是 lambda$2 和 lambda$3
 			found := false
-			for _, entry := range fCtx.DefinitionsBySN[p] {
+			defs, _ := fCtx.FindByShortName(p)
+			for _, entry := range defs {
 				if strings.Contains(entry.Element.QualifiedName, "lambda") {
 					found = true
 					break
@@ -1728,7 +1727,7 @@ func TestJavaCollector_ScopeVariable(t *testing.T) {
 
 	for varName, expectedQN := range expectedScopes {
 		t.Run("Verify_"+varName, func(t *testing.T) {
-			entries, ok := fCtx.DefinitionsBySN[varName]
+			entries, ok := fCtx.FindByShortName(varName)
 			if !ok || len(entries) == 0 {
 				t.Fatalf("Variable %s not found in definitions", varName)
 			}
@@ -1775,7 +1774,7 @@ func TestJavaCollector_SyntacticSugar_Step1(t *testing.T) {
 
 		found := false
 		// 显式遍历 fCtx 的定义，不要信任外部封装的 find 函数
-		if entries, ok := fCtx.DefinitionsBySN[shortName]; ok {
+		if entries, ok := fCtx.FindByShortName(shortName); ok {
 			for _, e := range entries {
 				if e.Element.QualifiedName == qn {
 					found = true
@@ -1881,7 +1880,8 @@ func TestJavaCollector_RecordSugar(t *testing.T) {
 		// 我们应该验证：在该 SN 下，Method 类型的定义是否只有一个
 		methodCount := 0
 		var methodDef *model.CodeElement
-		for _, d := range fCtx.DefinitionsBySN["name"] {
+		defs, _ = fCtx.FindByShortName("name")
+		for _, d := range defs {
 			if d.Element.Kind == model.Method {
 				methodCount++
 				methodDef = d.Element
@@ -1927,7 +1927,7 @@ func TestJavaCollector_TryWithResources(t *testing.T) {
 		varName := "input"
 		expectedQN := baseQN + ".block$1.input"
 
-		entries, ok := fCtx.DefinitionsBySN[varName]
+		entries, ok := fCtx.FindByShortName(varName)
 		if !ok || len(entries) == 0 {
 			t.Fatalf("Variable %s not found", varName)
 		}
@@ -1949,7 +1949,7 @@ func TestJavaCollector_TryWithResources(t *testing.T) {
 		}
 
 		for _, res := range resources {
-			entries, ok := fCtx.DefinitionsBySN[res.name]
+			entries, ok := fCtx.FindByShortName(res.name)
 			if !ok || len(entries) == 0 {
 				t.Errorf("Variable %s not found", res.name)
 				continue
@@ -1969,7 +1969,7 @@ func TestJavaCollector_TryWithResources(t *testing.T) {
 
 	// 验证：方法下应该只有 2 个 block
 	t.Run("Verify_BlockCount", func(t *testing.T) {
-		blocks := fCtx.DefinitionsBySN["block"]
+		blocks, _ := fCtx.FindByShortName("block")
 		// 注意：这里需要过滤出属于 test() 方法下的 block
 		count := 0
 		for _, b := range blocks {
@@ -2205,11 +2205,9 @@ func TestJavaCollector_MethodReference(t *testing.T) {
 // 辅助函数：根据 QN 在 fCtx 中查找定义
 func findDefinitionsByQN(fCtx *core.FileContext, targetQN string) []*core.DefinitionEntry {
 	var result []*core.DefinitionEntry
-	for _, entries := range fCtx.DefinitionsBySN {
-		for _, entry := range entries {
-			if entry.Element.QualifiedName == targetQN {
-				result = append(result, entry)
-			}
+	for _, entry := range fCtx.Definitions {
+		if entry.Element.QualifiedName == targetQN {
+			result = append(result, entry)
 		}
 	}
 

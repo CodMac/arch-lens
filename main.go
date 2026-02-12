@@ -85,8 +85,8 @@ func runExport(cfg Config, gCtx *core.GlobalContext, rels []*model.DependencyRel
 
 	format := cfg.Format
 	if format == "mermaid" {
-		if len(gCtx.DefinitionsByQN) > MaxMermaidNodes || len(rels) > MaxMermaidEdges {
-			fmt.Fprintf(os.Stderr, "    ⚠️  规模过大(%d 节点)，Mermaid 渲染可能失败，自动降级为 jsonl\n", len(gCtx.DefinitionsByQN))
+		if len(gCtx.Definitions) > MaxMermaidNodes || len(rels) > MaxMermaidEdges {
+			fmt.Fprintf(os.Stderr, "    ⚠️  规模过大(%d 节点)，Mermaid 渲染可能失败，自动降级为 jsonl\n", len(gCtx.Definitions))
 			format = "jsonl"
 		}
 	}

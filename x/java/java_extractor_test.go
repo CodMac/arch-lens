@@ -746,40 +746,75 @@ func TestJavaExtractor_AssignClass(t *testing.T) {
 
 	expectedRels := []struct {
 		sourceQN   string
-		targetName string
-		value      string // 新增：用于精确定位
+		targetName string // 补全为全路径 QN
+		value      string
 		checkMores func(t *testing.T, mores map[string]interface{})
 	}{
+		// 0. 字段声明处的初始化 (count = 0)
+		// Source 和 Target 均为 Field 本身 QN
 		{
-			sourceQN:   "testClassAssignments",
-			targetName: "list",
-			value:      "new ArrayList<>()",
+			sourceQN:   "com.example.rel.AssignRelationForClassSuite.count",
+			targetName: "com.example.rel.AssignRelationForClassSuite.count",
+			value:      "0",
 			checkMores: func(t *testing.T, m map[string]interface{}) {
 				assert.Equal(t, true, m[java.RelAssignIsInitializer])
 			},
 		},
+		// 1. 局部变量初始化 (local = 10)
+		// Target QN 包含方法名(带参数类型)和变量名
 		{
-			sourceQN:   "testClassAssignments",
-			targetName: "name",
-			value:      "\"Hello\"",
+			sourceQN:   "com.example.rel.AssignRelationForClassSuite.testAssignments(int)",
+			targetName: "com.example.rel.AssignRelationForClassSuite.testAssignments(int).local",
+			value:      "10",
 			checkMores: func(t *testing.T, m map[string]interface{}) {
-				assert.Equal(t, "assignment_expression", m[java.RelAstKind])
+				assert.Equal(t, true, m[java.RelAssignIsInitializer])
 			},
 		},
+		// 2. 隐式 this 字段赋值 (count += 5)
 		{
-			sourceQN:   "testClassAssignments",
-			targetName: "data",
-			value:      "new DataNode()", // 匹配第一处赋值
+			sourceQN:   "com.example.rel.AssignRelationForClassSuite.testAssignments(int)",
+			targetName: "com.example.rel.AssignRelationForClassSuite.count",
+			value:      "5",
 			checkMores: func(t *testing.T, m map[string]interface{}) {
-				assert.Equal(t, "variable_declarator", m[java.RelAstKind])
+				assert.Equal(t, "+=", m[java.RelAssignOperator])
+				assert.Equal(t, "this", m[java.RelAssignReceiver])
 			},
 		},
+		// 3. 显式 this 字段赋值 (this.count = 100)
 		{
-			sourceQN:   "testClassAssignments",
-			targetName: "data",
-			value:      "null", // 匹配第二处赋值
+			sourceQN:   "com.example.rel.AssignRelationForClassSuite.testAssignments(int)",
+			targetName: "com.example.rel.AssignRelationForClassSuite.count",
+			value:      "100",
 			checkMores: func(t *testing.T, m map[string]interface{}) {
-				assert.Equal(t, "assignment_expression", m[java.RelAstKind])
+				assert.Equal(t, "this", m[java.RelAssignReceiver])
+			},
+		},
+		// 4. 静态字段赋值 (AssignRelationForClassSuite.TAG = "UPDATED")
+		{
+			sourceQN:   "com.example.rel.AssignRelationForClassSuite.testAssignments(int)",
+			targetName: "com.example.rel.AssignRelationForClassSuite.TAG",
+			value:      "\"UPDATED\"",
+			checkMores: func(t *testing.T, m map[string]interface{}) {
+				assert.Equal(t, "AssignRelationForClassSuite", m[java.RelAssignReceiver])
+			},
+		},
+		// 5. 跨对象字段赋值 (node.name = "NewName")
+		// Target QN 指向 DataNode 内部类中的字段定义
+		{
+			sourceQN:   "com.example.rel.AssignRelationForClassSuite.testAssignments(int)",
+			targetName: "com.example.rel.AssignRelationForClassSuite.DataNode.name",
+			value:      "\"NewName\"",
+			checkMores: func(t *testing.T, m map[string]interface{}) {
+				assert.Equal(t, "node", m[java.RelAssignReceiver])
+			},
+		},
+		// 6. 参数二次赋值 (param = 200)
+		{
+			sourceQN:   "com.example.rel.AssignRelationForClassSuite.testAssignments(int)",
+			targetName: "com.example.rel.AssignRelationForClassSuite.testAssignments(int).param",
+			value:      "200",
+			checkMores: func(t *testing.T, m map[string]interface{}) {
+				assert.Equal(t, false, m[java.RelAssignIsInitializer])
 			},
 		},
 	}
@@ -787,13 +822,15 @@ func TestJavaExtractor_AssignClass(t *testing.T) {
 	for _, exp := range expectedRels {
 		found := false
 		for _, rel := range allRelations {
-			// 增加 ValueExpression 的匹配校验
 			relValue, _ := rel.Mores[java.RelAssignValueExpression].(string)
 
+			// 匹配逻辑：
+			// Source QN 使用 strings.Contains (防止由于空格等引起的微小不一致)
+			// Target QN 使用完全匹配
 			if rel.Type == model.Assign &&
 				strings.Contains(rel.Source.QualifiedName, exp.sourceQN) &&
-				rel.Target.Name == exp.targetName &&
-				relValue == exp.value { // 精确匹配
+				rel.Target.QualifiedName == exp.targetName &&
+				relValue == exp.value {
 
 				found = true
 				if exp.checkMores != nil {
@@ -898,6 +935,8 @@ func TestJavaExtractor_Use(t *testing.T) {
 		t.Fatalf("Extraction failed: %v", err)
 	}
 
+	printRelations(allRelations)
+
 	// 基础 QN 定义
 	baseQN := "com.example.rel.UseRelationSuite"
 	methodQN := baseQN + ".testUseCases(int)"
@@ -978,8 +1017,8 @@ func TestJavaExtractor_Use(t *testing.T) {
 				if m[java.RelUseIsCapture] != nil {
 					assert.Equal(t, true, m[java.RelUseIsCapture])
 				}
-				assert.Equal(t, "fieldVar", m[java.RelRawText])
-				assert.Equal(t, "identifier", m[java.RelContext])
+				assert.Equal(t, "System.out.println(fieldVar);", m[java.RelRawText])
+				assert.Equal(t, "expression_statement", m[java.RelContext])
 			},
 		},
 		{
@@ -1512,6 +1551,208 @@ func TestJavaExtractor_TypeArg(t *testing.T) {
 	}
 }
 
+func TestJavaExtractor_Use_Advanced(t *testing.T) {
+	// 定义测试文件组
+	case1 := "testdata/com/example/rel/use/case1/ScopeTest.java"
+	case2Parent := "testdata/com/example/rel/use/case2/Parent.java"
+	case2Child := "testdata/com/example/rel/use/case2/Child.java"
+	case3Base := "testdata/com/example/rel/use/case3/Base.java"
+	case3Sub := "testdata/com/example/rel/use/case3/Sub.java"
+	case4 := "testdata/com/example/rel/use/case4/StaticTest.java"
+	case5 := "testdata/com/example/rel/use/case5/ClosureTest.java"
+	case6ReceiverTest := "testdata/com/example/rel/use/case6/ReceiverTest.java"
+	case6User := "testdata/com/example/rel/use/case6/User.java"
+
+	// 预运行：收集所有相关文件的定义到全局上下文
+	allFiles := []string{case1, case2Parent, case2Child, case3Base, case3Sub, case4, case5, case6ReceiverTest, case6User}
+	gCtx := runPhase1Collection(t, allFiles)
+	extractor := java.NewJavaExtractor()
+
+	// 验证逻辑
+	testCases := []struct {
+		name       string
+		targetFile string
+		expected   []struct {
+			relType    model.DependencyType
+			sourceQN   string
+			targetQN   string // 这里的 targetQN 期待的是解析后的全限定名
+			targetKind model.ElementKind
+		}
+	}{
+		{
+			name:       "Case 1: Lexical Scope Shadowing",
+			targetFile: case1,
+			expected: []struct {
+				relType    model.DependencyType
+				sourceQN   string
+				targetQN   string
+				targetKind model.ElementKind
+			}{
+				// [Case 1] if块内的 name 应该解析为块内定义的局部变量
+				{
+					relType:    model.Use,
+					sourceQN:   "com.example.rel.use.case1.ScopeTest.test(String)",
+					targetQN:   "com.example.rel.use.case1.ScopeTest.test(String).block$1.name",
+					targetKind: model.Variable,
+				},
+				// [Case 2] if块外的 name 应该解析为方法的参数
+				{
+					relType:    model.Use,
+					sourceQN:   "com.example.rel.use.case1.ScopeTest.test(String)",
+					targetQN:   "com.example.rel.use.case1.ScopeTest.test(String).name",
+					targetKind: model.Variable,
+				},
+			},
+		},
+		{
+			name:       "Case 2: Inheritance and Shadowing",
+			targetFile: case2Child,
+			expected: []struct {
+				relType    model.DependencyType
+				sourceQN   string
+				targetQN   string
+				targetKind model.ElementKind
+			}{
+				// [Case 3] count 遮蔽：应解析为 Child 自己的字段而非 Parent 的
+				{
+					relType:    model.Use,
+					sourceQN:   "com.example.rel.use.case2.Child.print()",
+					targetQN:   "com.example.rel.use.case2.Child.count",
+					targetKind: model.Field,
+				},
+				// [Case 4] 静态继承：应解析到 Parent.TAG
+				{
+					relType:    model.Use,
+					sourceQN:   "com.example.rel.use.case2.Child.print()",
+					targetQN:   "com.example.rel.use.case2.Parent.TAG",
+					targetKind: model.Field,
+				},
+			},
+		},
+		{
+			name:       "Case 3: Visibility (Protected vs Package)",
+			targetFile: case3Sub,
+			expected: []struct {
+				relType    model.DependencyType
+				sourceQN   string
+				targetQN   string
+				targetKind model.ElementKind
+			}{
+				// [Case 5] Protected 变量在子类可见
+				{
+					relType:    model.Use,
+					sourceQN:   "com.example.rel.use.case3.pk2.Sub.check()",
+					targetQN:   "com.example.rel.use.case3.pk1.Base.protectedVar",
+					targetKind: model.Field,
+				},
+				// [Case 6] Package 变量跨包不可见，Resolver 应返回 nil
+			},
+		},
+		{
+			name:       "Case 4: Static Constraint",
+			targetFile: case4,
+			expected: []struct {
+				relType    model.DependencyType
+				sourceQN   string
+				targetQN   string
+				targetKind model.ElementKind
+			}{
+				// [Case 7] 静态方法访问静态变量
+				{
+					relType:    model.Use,
+					sourceQN:   "com.example.rel.use.case4.StaticTest.staticMethod()",
+					targetQN:   "com.example.rel.use.case4.StaticTest.staticVar",
+					targetKind: model.Field,
+				},
+				// [Case 8] 静态方法访问实例变量 (解析器应因 checkVisibility 或 static 校验而拒绝)
+				// 注意：如果 Resolver 实现了静态校验，这里 targetQN 不应是全路径
+			},
+		},
+		{
+			name:       "Case 5: Closures (Anonymous Class & Lambda)",
+			targetFile: case5,
+			expected: []struct {
+				relType    model.DependencyType
+				sourceQN   string
+				targetQN   string
+				targetKind model.ElementKind
+			}{
+				// [Case 9] 匿名内部类访问自己的 context
+				{
+					relType:    model.Use,
+					sourceQN:   "com.example.rel.use.case5.ClosureTest.run().anonymousClass$1.run()",
+					targetQN:   "com.example.rel.use.case5.ClosureTest.run().anonymousClass$1.context",
+					targetKind: model.Field,
+				},
+				// [Case 10] Lambda 捕获外部类的 context
+				{
+					relType:    model.Use,
+					sourceQN:   "com.example.rel.use.case5.ClosureTest.run().lambda$1",
+					targetQN:   "com.example.rel.use.case5.ClosureTest.context",
+					targetKind: model.Field,
+				},
+			},
+		},
+		{
+			name:       "Case 6: Chained Receiver Trace",
+			targetFile: "testdata/com/example/rel/use/case6/ReceiverTest.java",
+			expected: []struct {
+				relType    model.DependencyType
+				sourceQN   string
+				targetQN   string
+				targetKind model.ElementKind
+			}{
+				// 1. 变量使用：user 应该指向方法内的局部变量
+				{
+					relType:    model.Use,
+					sourceQN:   "com.example.rel.use.case6.ReceiverTest.test()",
+					targetQN:   "com.example.rel.use.case6.ReceiverTest.test().user",
+					targetKind: model.Variable,
+				},
+				// 2. 方法调用：getName() 的 Receiver 是 user (User类型)
+				//{
+				//	relType:    model.Call,
+				//	sourceQN:   "com.example.rel.use.case6.ReceiverTest.test()",
+				//	targetQN:   "com.example.rel.use.case6.User.getName()", // 理想目标
+				//	targetKind: model.Method,
+				//},
+				// 3. 链式调用：trim() 的 Receiver 是 getName() 的返回值 (String类型)
+				//{
+				//	relType:    model.Call,
+				//	sourceQN:   "com.example.rel.use.case6.ReceiverTest.test()",
+				//	targetQN:   "String.trim()", // 理想目标
+				//	targetKind: model.Method,
+				//},
+			},
+		},
+	}
+
+	// 执行测试循环
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			allRelations, err := extractor.Extract(tc.targetFile, gCtx)
+			assert.NoError(t, err)
+
+			printRelations(allRelations)
+
+			for _, exp := range tc.expected {
+				found := false
+				for _, rel := range allRelations {
+					// 匹配逻辑：源 QN 包含预期后缀，且目标 QN 完全匹配
+					if rel.Type == exp.relType &&
+						rel.Target.QualifiedName == exp.targetQN &&
+						strings.Contains(rel.Source.QualifiedName, exp.sourceQN) {
+						found = true
+						assert.Equal(t, exp.targetKind, rel.Target.Kind)
+						break
+					}
+				}
+				assert.True(t, found, "Missing Rel: [%s] from %s to %s", exp.relType, exp.sourceQN, exp.targetQN)
+			}
+		})
+	}
+}
+
 // --- 这里放置你提供的辅助函数 ---
 
 func runPhase1Collection(t *testing.T, files []string) *core.GlobalContext {
@@ -1530,7 +1771,7 @@ func runPhase1Collection(t *testing.T, files []string) *core.GlobalContext {
 	col := java.NewJavaCollector()
 
 	for _, file := range files {
-		rootNode, sourceBytes, err := javaParser.ParseFile(file, false, false)
+		rootNode, sourceBytes, err := javaParser.ParseFile(file, false, true)
 		if err != nil {
 			t.Fatalf("Failed to parse file %s: %v", file, err)
 		}
