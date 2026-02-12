@@ -59,6 +59,8 @@ func (j *SymbolResolver) Resolve(gc *core.GlobalContext, fc *core.FileContext, n
 
 // resolveVariable 处理变量查找，支持本地作用域回溯和类成员继承查找
 func (j *SymbolResolver) resolveVariable(gc *core.GlobalContext, fc *core.FileContext, node *sitter.Node, receiver string, symbol string) *model.CodeElement {
+	isStatic := false
+
 	if receiver != "" {
 		// 场景 A: this 或 super
 		if receiver == "this" || receiver == "super" {
@@ -66,12 +68,13 @@ func (j *SymbolResolver) resolveVariable(gc *core.GlobalContext, fc *core.FileCo
 			if container == nil {
 				return nil
 			}
-			isStatic := slices.Contains(container.Extra.Modifiers, "static")
+			isStatic = slices.Contains(container.Extra.Modifiers, "static")
 
 			startEntry := container
 			if receiver == "super" {
 				return j.resolveFromInheritance(gc, fc, container, symbol, isStatic, container)
 			}
+
 			return j.resolveInScopeHierarchy(gc, fc, startEntry.QualifiedName, symbol, isStatic, container)
 		}
 
@@ -80,17 +83,24 @@ func (j *SymbolResolver) resolveVariable(gc *core.GlobalContext, fc *core.FileCo
 		cleanedReceiver := j.clean(receiver)
 		if entries := j.preciseResolve(gc, fc, cleanedReceiver); len(entries) > 0 {
 			// 如果解析结果是类/接口，则按静态字段查找
-			if entries[0].Element.Kind == model.Class || entries[0].Element.Kind == model.Interface {
-				return j.resolveInScopeHierarchy(gc, fc, entries[0].Element.QualifiedName, symbol, true, entries[0].Element)
+			receiverEle := entries[0].Element
+			if receiverEle.Kind == model.Class || receiverEle.Kind == model.Interface || receiverEle.Kind == model.AnonymousClass {
+				return j.resolveInScopeHierarchy(gc, fc, receiverEle.QualifiedName, symbol, true, receiverEle)
 			}
 		}
 
 		// 场景 C: 跨对象访问 (data.age)
 		// 先解析 receiver 变量本身拿到它的类型
-		recvVar := j.resolveVariable(gc, fc, node, "", receiver)
+		recvVar := j.resolveVariable(gc, fc, node, "", cleanedReceiver)
 		if recvVar != nil && recvVar.Extra != nil {
-			if typeQN, ok := recvVar.Extra.Mores[VariableRawType].(string); ok {
-				return j.resolveInScopeHierarchy(gc, fc, j.clean(typeQN), symbol, false, recvVar)
+			if varRawType, ok := recvVar.Extra.Mores[VariableRawType].(string); ok {
+				if entries := j.preciseResolve(gc, fc, varRawType); len(entries) > 0 {
+					receiverEle := entries[0].Element
+					if receiverEle.Kind == model.Class || receiverEle.Kind == model.Interface || receiverEle.Kind == model.AnonymousClass {
+						return j.resolveInScopeHierarchy(gc, fc, receiverEle.QualifiedName, symbol, false, receiverEle)
+					}
+				}
+
 			}
 		}
 	}
@@ -100,7 +110,7 @@ func (j *SymbolResolver) resolveVariable(gc *core.GlobalContext, fc *core.FileCo
 	if container == nil {
 		return nil
 	}
-	isStatic := slices.Contains(container.Extra.Modifiers, "static")
+	isStatic = slices.Contains(container.Extra.Modifiers, "static")
 	return j.resolveInScopeHierarchy(gc, fc, container.QualifiedName, symbol, isStatic, container)
 }
 

@@ -386,24 +386,23 @@ func (e *Extractor) enrichCreateCore(rel *model.DependencyRelation, node, ctx *s
 }
 
 func (e *Extractor) enrichAssignCore(rel *model.DependencyRelation, node, ctx *sitter.Node, src []byte) {
-	// 1. 基础信息补全
+	// --- 基础信息补全 ---
 	rel.Mores[RelAssignTargetName] = node.Utf8Text(src)
 	rel.Mores[RelRawText] = ctx.Utf8Text(src)
 	rel.Mores[RelAstKind] = node.Kind() // 记录为 identifier
 
-	// 2. 核心增强：提取 Receiver (解决 <nil> 问题)
-	// 判断标识符是否在 field_access (this.x, node.x) 中
+	// --- 提取并填充 Receiver 属性 ---
 	parent := node.Parent()
 	if parent != nil && parent.Kind() == "field_access" {
 		if obj := parent.ChildByFieldName("object"); obj != nil {
 			rel.Mores[RelAssignReceiver] = obj.Utf8Text(src)
 		}
 	} else if rel.Target != nil && rel.Target.Kind == model.Field {
-		// 如果解析出来的目标是 Field，但没有显式的 field_access，说明是隐式 this
+		// 如果解析出来的目标是 Field，且没有显式前缀，则标记为隐式 this
 		rel.Mores[RelAssignReceiver] = "this"
 	}
 
-	// 3. 根据 Context 提取 Value 和 Operator
+	// --- 提取 Operator 和 Value ---
 	switch ctx.Kind() {
 	case "variable_declarator":
 		rel.Mores[RelAssignIsInitializer] = true
@@ -411,32 +410,26 @@ func (e *Extractor) enrichAssignCore(rel *model.DependencyRelation, node, ctx *s
 		if val := ctx.ChildByFieldName("value"); val != nil {
 			rel.Mores[RelAssignValueExpression] = val.Utf8Text(src)
 		}
-
 	case "assignment_expression":
 		rel.Mores[RelAssignIsInitializer] = false
-		// 提取操作符 (+=, -=, =)
 		if op := ctx.ChildByFieldName("operator"); op != nil {
 			rel.Mores[RelAssignOperator] = op.Utf8Text(src)
-		} else {
-			rel.Mores[RelAssignOperator] = "="
 		}
-		// 提取右值
 		if right := ctx.ChildByFieldName("right"); right != nil {
 			rel.Mores[RelAssignValueExpression] = right.Utf8Text(src)
 		}
-
 	case "update_expression":
 		rel.Mores[RelAssignIsInitializer] = false
+		// 处理 ++ / --
 		txt := ctx.Utf8Text(src)
 		if strings.Contains(txt, "++") {
 			rel.Mores[RelAssignOperator] = "++"
-		} else if strings.Contains(txt, "--") {
+		} else {
 			rel.Mores[RelAssignOperator] = "--"
 		}
-		rel.Mores[RelAssignValueExpression] = "" // 自增自减没有明确的 ValueExpression
 	}
 
-	// 3. 处理 EnclosingMethod 和 IsCapture
+	// --- 处理 EnclosingMethod 和 IsCapture ---
 	if rel.Source != nil {
 		qn := rel.Source.QualifiedName
 		stopMarkers := []string{".lambda", ".anonymousClass", "$", ".block"}
@@ -700,15 +693,17 @@ func (e *Extractor) mapAction(capName string, node *sitter.Node, fCtx *core.File
 			return nil
 		}
 
-		// 2. 字段访问：重置node、text
-		resolveNode := node
-		if node.Parent() != nil && node.Parent().Kind() == "field_access" {
-			node.Parent().ChildByFieldName("object")
-			resolveNode = node.Parent()
-
+		// 2. 识别 Receiver
+		receiverText := ""
+		parent := node.Parent()
+		if parent != nil && parent.Kind() == "field_access" {
+			// 在 field_access 结构中，field 属性是我们当前的 node，object 属性是 receiver
+			if obj := parent.ChildByFieldName("object"); obj != nil {
+				receiverText = obj.Utf8Text(src)
+			}
 		}
 
-		return []ActionTarget{{model.Assign, node, ctx, resolve("", text, resolveNode, model.Variable)}}
+		return []ActionTarget{{model.Assign, node, ctx, resolve(receiverText, text, node, model.Variable)}}
 
 	case "id_atom":
 		target := resolve("", text, node, model.Variable)
