@@ -517,40 +517,31 @@ func (e *Extractor) enrichUseCore(rel *model.DependencyRelation, node, ctx *sitt
 		return
 	}
 
-	rel.Mores[RelAstKind] = node.Kind()
-	rel.Mores[RelContext] = ctx.Kind()
+	rel.Mores[RelUseTargetName] = node.Utf8Text(src)
 	rel.Mores[RelRawText] = ctx.Utf8Text(src)
+	rel.Mores[RelAstKind] = node.Kind()
 
-	// --- 核心优化：多维度提取 Receiver ---
+	// 1. 设置 Context 类型 (例如 field_access 或 assignment_expression)
+	rel.Mores[RelContext] = ctx.Kind()
+
+	// 2. 提取并填充 Receiver 文本
 	parent := node.Parent()
-	if parent != nil {
-		switch parent.Kind() {
-		case "field_access":
-			// 处理 user.name 或 this.field
-			if obj := parent.ChildByFieldName("object"); obj != nil {
-				rel.Mores[RelUseReceiver] = obj.Utf8Text(src)
-				rel.Mores[RelUseTargetName] = node.Utf8Text(src)
-			}
-		case "scoped_identifier":
-			// 处理 ClassName.CONSTANT
-			if scope := parent.ChildByFieldName("scope"); scope != nil {
-				rel.Mores[RelUseReceiver] = scope.Utf8Text(src)
-				rel.Mores[RelUseTargetName] = node.Utf8Text(src)
-			}
-		case "method_invocation":
-			// 如果标识符本身是方法名（由 call_target 处理时），这里可以提取 object
-			if obj := parent.ChildByFieldName("object"); obj != nil {
-				rel.Mores[RelUseReceiver] = obj.Utf8Text(src)
-			}
+	if parent != nil && parent.Kind() == "field_access" {
+		if obj := parent.ChildByFieldName("object"); obj != nil {
+			rel.Mores[RelUseReceiver] = obj.Utf8Text(src)
 		}
+	} else if rel.Target != nil && rel.Target.Kind == model.Field {
+		// 如果解析目标是 Field 且无显式前缀，标记为隐式 this
+		rel.Mores[RelUseReceiver] = "this"
 	}
 
-	// --- 兜底逻辑：隐式 this 判定 ---
-	if _, exists := rel.Mores[RelUseReceiver]; !exists {
-		// 如果 Target 是字段，且没有显式的接收者，则默认为 this
-		if rel.Target != nil && rel.Target.Kind == model.Field {
-			rel.Mores[RelUseReceiver] = "this"
-			rel.Mores[RelUseTargetName] = node.Utf8Text(src)
+	// 3. 填充 ReceiverType
+	// 逻辑：如果 Target 是一个 Field，其 ReceiverType 通常是该 Field 所属类的 QualifiedName
+	if rel.Target != nil && rel.Target.Kind == model.Field {
+		qn := rel.Target.QualifiedName
+		if idx := strings.LastIndex(qn, "."); idx != -1 {
+			// 截取掉最后的字段名，保留类全路径
+			rel.Mores[RelUseReceiverType] = qn[:idx]
 		}
 	}
 
@@ -706,13 +697,27 @@ func (e *Extractor) mapAction(capName string, node *sitter.Node, fCtx *core.File
 		return []ActionTarget{{model.Assign, node, ctx, resolve(receiverText, text, node, model.Variable)}}
 
 	case "id_atom":
-		target := resolve("", text, node, model.Variable)
+		// 1. 向上寻找赋值的上下文容器
+		ctx := e.findNearestKind(node, "expression_statement", "local_variable_declaration", "enhanced_for_statement", "binary_expression", "cast_expression", "array_access", "parenthesized_expression", "field_access", "lambda_expression", "assignment_expression")
+		if ctx == nil {
+			return nil
+		}
+
+		// 2. 识别 Receiver
+		var receiverText string
+		parent := node.Parent()
+		if parent != nil && parent.Kind() == "field_access" {
+			if obj := parent.ChildByFieldName("object"); obj != nil && obj != node {
+				receiverText = obj.Utf8Text(src)
+			}
+		}
+
+		target := resolve(receiverText, text, node, model.Variable)
 		if !e.isUseRel(node, target) {
 			return nil
 		}
 
-		ctx := e.findNearestKind(node, "expression_statement", "local_variable_declaration", "enhanced_for_statement", "binary_expression", "cast_expression", "array_access", "parenthesized_expression", "field_access", "lambda_expression", "assignment_expression")
-		return []ActionTarget{{model.Use, node, ctx, resolve("", text, node, model.Variable)}}
+		return []ActionTarget{{model.Use, node, ctx, target}}
 
 	case "throw_target":
 		ctx := e.findNearestKind(node, "throw_statement")
