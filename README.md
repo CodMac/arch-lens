@@ -33,34 +33,51 @@ Arch-Lens 能够识别并提取以下维度的依赖关系，通过 `Mores` 字�
 Arch-Lens 将分析逻辑抽象为五个标准阶段，支持高并发流水线作业：
 
 1. **Collector**：提取原始定义与元数据。
-2. **Resolver**：执行符号绑定，处理 Import 与通配符。
-3. **Extractor**：执行 Action Query，发现动态行为依赖。
-4. **Linker**：缝合全局拓扑网，构建层级结构。
-5. **NoiseFilter**：执行降噪策略（Raw/Balanced/Pure）。
+2. **Binder**：深度语义符号处理。
+3. **Resolver**：执行符号绑定，处理 Import 与通配符。
+4. **Extractor**：执行 Action Query，发现动态行为依赖。
+5. **Linker**：缝合全局拓扑网，构建层级结构。
+6. **NoiseFilter**：执行降噪策略（Raw/Balanced/Pure）。
+
+### ✨ 核心特性
+
+* **多阶段消解管线 (Multi-stage Resolution)**：
+* **Collector**：全量符号并行扫描。
+* **Binder**：深度语义绑定，将原始类型名（Raw Type）提升为全限定名（Qualified Name），解决同名类干扰。
+* **Extractor**：基于 Binder 增强后的 QN 进行精准关系提取。
+
+
+* **方法重载消解 (Method Overload Resolution)**：
+* 不仅支持简单的参数计数匹配。
+* **类型感知匹配**：结合 Binder 提供的实参 QN 信息，对重载方法进行精确打分和选取。
+
+
+* **继承链深度回溯 (Inheritance Hierarchy Search)**：
+* 当在当前类未找到目标方法时，分析引擎会沿着 `extends` 和 `implements` 路径自动向上递归搜索父类及接口，直到准确定位符号定义点。
+
+
+* **上下文感知解析**：支持根据 `receiver`（接收者）类型自动切换搜索容器（如 `this`, `super` 或特定变量实例）。
 
 ---
 
-## 🛣 路线图 (Roadmap)
+## 🗺 路线图 (Roadmap)
 
-### 核心引擎 (Core Engine)
-
-* [ ] **SQL/Cypher Adapter**：支持将结果导入 Neo4j 数据库。
+* [x] **High-Precision Java Support**: 已支持全限定名绑定与继承链回溯。
+* [ ] **Neo4j Exporter**：支持将结果导入 Neo4j 数据库。
 * [ ] **Diff Analysis**：对比两次 Commit 间的架构耦合变化。
 * [ ] **Increment Mode**：基于 Git 修改范围的增量解析。
 
 ### 语言支持 (Language Support)
 
-* **Java (现已支持)**:
+* **Java (持续增强)**:
+* [x] **语义增强**：基于 Receiver 类型的容器自动定位。
+* [x] **重载匹配**：基于参数全限定名（QN）的精准重载消解。
 * [ ] **语法糖增强**：自动生成 `Enum.values()`、`Record` Getter 等隐式成员。
 * [ ] **框架增强**：支持 Lombok (`@Data`, `@Builder`) 等编译时生成方法的语法糖注入。
 * [ ] **推断增强**：Lambda 目标函数式接口的 Expected Type 自动推断。
-
-
 * **Go (开发中)**:
 * [ ] Interface 隐式实现映射。
 * [ ] Struct Embedding 关系识别。
-
-
 
 ---
 

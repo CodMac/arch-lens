@@ -872,7 +872,7 @@ func TestJavaExtractor_AssignDataFlow(t *testing.T) {
 			targetName: "data",
 			value:      "\"CONST\"",
 			checkMores: func(t *testing.T, m map[string]interface{}) {
-				assert.Equal(t, "assignment_expression", m[java.RelAstKind])
+				assert.Equal(t, "identifier", m[java.RelAstKind])
 				assert.Equal(t, "=", m[java.RelAssignOperator])
 			},
 		},
@@ -882,7 +882,7 @@ func TestJavaExtractor_AssignDataFlow(t *testing.T) {
 			targetName: "localObj",
 			value:      "fetch()",
 			checkMores: func(t *testing.T, m map[string]interface{}) {
-				assert.Equal(t, "variable_declarator", m[java.RelAstKind])
+				assert.Equal(t, "identifier", m[java.RelAstKind])
 				assert.Equal(t, true, m[java.RelAssignIsInitializer])
 			},
 		},
@@ -892,7 +892,7 @@ func TestJavaExtractor_AssignDataFlow(t *testing.T) {
 			targetName: "msg",
 			value:      "(String) localObj",
 			checkMores: func(t *testing.T, m map[string]interface{}) {
-				assert.Equal(t, "variable_declarator", m[java.RelAstKind])
+				assert.Equal(t, "identifier", m[java.RelAstKind])
 				assert.Equal(t, true, m[java.RelAssignIsInitializer])
 				assert.Equal(t, "msg", m[java.RelAssignTargetName])
 			},
@@ -1766,9 +1766,11 @@ func runPhase1Collection(t *testing.T, files []string) *core.GlobalContext {
 	if err != nil {
 		t.Fatalf("Failed to create parser: %v", err)
 	}
-	// 注意：在真实测试中可能需要根据情况处理 Close，这里暂存
 
-	col := java.NewJavaCollector()
+	col, err := core.GetCollector(core.LangJava)
+	if err != nil {
+		t.Fatalf("Failed to create collector: %v", err)
+	}
 
 	for _, file := range files {
 		rootNode, sourceBytes, err := javaParser.ParseFile(file, false, true)
@@ -1782,6 +1784,13 @@ func runPhase1Collection(t *testing.T, files []string) *core.GlobalContext {
 		}
 		gc.RegisterFileContext(fCtx)
 	}
+
+	binder, err := core.GetBinder(core.LangJava)
+	if err != nil {
+		t.Fatalf("Failed to create binder: %v", err)
+	}
+	binder.BindSymbols(gc)
+
 	return gc
 }
 

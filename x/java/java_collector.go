@@ -14,11 +14,7 @@ type Collector struct {
 }
 
 func NewJavaCollector() *Collector {
-	resolver, err := core.GetSymbolResolver(core.LangJava)
-	if err != nil {
-		panic(err)
-	}
-	return &Collector{resolver: resolver}
+	return &Collector{resolver: NewJavaSymbolResolver()}
 }
 
 // =============================================================================
