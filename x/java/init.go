@@ -23,6 +23,9 @@ func init() {
 	// 注册 Extractor
 	core.RegisterExtractor(core.LangJava, NewJavaExtractor())
 
+	// 注册 Binder
+	core.RegisterBinder(core.LangJava, NewJavaBinder())
+
 	// 注册 Linker
 	core.RegisterLinker(core.LangJava, NewJavaLinker())
 }

@@ -13,6 +13,8 @@ type GlobalContext struct {
 	qualifiedNameMap map[string]*DefinitionEntry
 	resolver         SymbolResolver // 持有具体语言的解析器
 	mutex            sync.RWMutex
+
+	methodMapWithNoParams map[string][]*DefinitionEntry // key: 不包含方法参数的qn
 }
 
 func NewGlobalContext(resolver SymbolResolver) *GlobalContext {
@@ -21,6 +23,8 @@ func NewGlobalContext(resolver SymbolResolver) *GlobalContext {
 		Definitions:      make([]*DefinitionEntry, 0),
 		qualifiedNameMap: make(map[string]*DefinitionEntry),
 		resolver:         resolver,
+
+		methodMapWithNoParams: make(map[string][]*DefinitionEntry),
 	}
 }
 
@@ -39,16 +43,14 @@ func (gc *GlobalContext) RegisterFileContext(fc *FileContext) {
 		Path:          fc.FilePath,
 		IsFormSource:  true,
 	}
-	gc.Definitions = append(gc.Definitions, &DefinitionEntry{Element: fileElem})
-	gc.qualifiedNameMap[fc.FilePath] = &DefinitionEntry{Element: fileElem}
+	gc.AddDefinition(&DefinitionEntry{Element: fileElem})
 
 	// 2. 委托 Resolver 处理包/命名空间注册 (Java 拆分, Go 不拆)
 	gc.resolver.RegisterPackage(gc, fc.PackageName)
 
 	// 3. 注册文件内定义
 	for _, entry := range fc.Definitions {
-		gc.Definitions = append(gc.Definitions, entry)
-		gc.qualifiedNameMap[entry.Element.QualifiedName] = entry
+		gc.AddDefinition(entry)
 	}
 }
 
@@ -59,6 +61,11 @@ func (gc *GlobalContext) AddDefinition(def *DefinitionEntry) {
 	if !ok {
 		gc.Definitions = append(gc.Definitions, def)
 		gc.qualifiedNameMap[defQN] = def
+
+		if def.Element.Kind == model.Method {
+			methodKey := def.ParentQN + def.Element.Name
+			gc.methodMapWithNoParams[methodKey] = append(gc.methodMapWithNoParams[methodKey], def)
+		}
 	}
 }
 
@@ -69,6 +76,11 @@ func (gc *GlobalContext) FindByQualifiedName(qn string) (*DefinitionEntry, bool)
 
 func (gc *GlobalContext) BuildQualifiedName(parentQN, name string) string {
 	return gc.resolver.BuildQualifiedName(parentQN, name)
+}
+
+func (gc *GlobalContext) FindMethodByNoParamsQN(noParamsQN string) ([]*DefinitionEntry, bool) {
+	entries, ok := gc.methodMapWithNoParams[noParamsQN]
+	return entries, ok
 }
 
 func (gc *GlobalContext) RLock() { gc.mutex.RLock() }

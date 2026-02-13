@@ -1766,9 +1766,11 @@ func runPhase1Collection(t *testing.T, files []string) *core.GlobalContext {
 	if err != nil {
 		t.Fatalf("Failed to create parser: %v", err)
 	}
-	// 注意：在真实测试中可能需要根据情况处理 Close，这里暂存
 
-	col := java.NewJavaCollector()
+	col, err := core.GetCollector(core.LangJava)
+	if err != nil {
+		t.Fatalf("Failed to create collector: %v", err)
+	}
 
 	for _, file := range files {
 		rootNode, sourceBytes, err := javaParser.ParseFile(file, false, true)
@@ -1782,6 +1784,13 @@ func runPhase1Collection(t *testing.T, files []string) *core.GlobalContext {
 		}
 		gc.RegisterFileContext(fCtx)
 	}
+
+	binder, err := core.GetBinder(core.LangJava)
+	if err != nil {
+		t.Fatalf("Failed to create binder: %v", err)
+	}
+	binder.BindSymbols(gc)
+
 	return gc
 }
 

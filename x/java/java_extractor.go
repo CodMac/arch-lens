@@ -14,13 +14,8 @@ type Extractor struct {
 }
 
 func NewJavaExtractor() *Extractor {
-	resolver, err := core.GetSymbolResolver(core.LangJava)
-	if err != nil {
-		panic(err)
-	}
-
 	return &Extractor{
-		resolver: resolver,
+		resolver: NewJavaSymbolResolver(),
 	}
 }
 
@@ -276,6 +271,9 @@ func (e *Extractor) enrichCoreMetadata(rel *model.DependencyRelation, fCtx *core
 func (e *Extractor) enrichCallCore(rel *model.DependencyRelation, node *sitter.Node, ctx *sitter.Node, src []byte) {
 	rel.Mores[RelCallIsStatic] = false
 	rel.Mores[RelCallIsConstructor] = false
+	rel.Mores[RelAstKind] = node.Kind()
+	rel.Mores[RelRawText] = ctx.Utf8Text(src)
+	rel.Mores[RelContext] = ctx.Kind()
 
 	if node == nil {
 		return
@@ -291,7 +289,6 @@ func (e *Extractor) enrichCallCore(rel *model.DependencyRelation, node *sitter.N
 	if callNode == nil {
 		return
 	}
-	rel.Mores[RelAstKind] = callNode.Kind()
 
 	switch callNode.Kind() {
 	case "method_invocation":
@@ -664,7 +661,13 @@ func (e *Extractor) mapAction(capName string, node *sitter.Node, fCtx *core.File
 	switch capName {
 	case "call_target", "ref_target":
 		ctx := e.findNearestKind(node, "method_invocation", "method_reference", "explicit_constructor_invocation", "object_creation_expression")
-		return []ActionTarget{{model.Call, node, ctx, resolve("", text, node, model.Method)}}
+		var receiverText string
+		if ctx != nil {
+			if obj := ctx.ChildByFieldName("object"); obj != nil {
+				receiverText = obj.Utf8Text(src)
+			}
+		}
+		return []ActionTarget{{model.Call, node, ctx, resolve(receiverText, text, node, model.Method)}}
 
 	case "create_target":
 		ctx := e.findNearestKind(node, "object_creation_expression", "array_creation_expression")

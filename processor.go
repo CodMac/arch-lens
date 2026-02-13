@@ -14,7 +14,6 @@ type FileProcessor struct {
 	OutputAST   bool
 	FormatAST   bool
 	Concurrency int
-	// 新增：过滤等级配置
 	FilterLevel core.FilterLevel
 }
 
@@ -37,8 +36,9 @@ func (fp *FileProcessor) ProcessFiles(rootPath string, filePaths []string) ([]*m
 		return nil, nil, err
 	}
 
-	globalContext := core.NewGlobalContext(resolver)
+	gc := core.NewGlobalContext(resolver)
 	absRoot, _ := filepath.Abs(rootPath)
+	var allRelations []*model.DependencyRelation
 
 	// --- 阶段 1: 并行收集 (Collector) ---
 	err = fp.runParallel(filePaths, func(path string, p parser.Parser) error {
@@ -53,30 +53,26 @@ func (fp *FileProcessor) ProcessFiles(rootPath string, filePaths []string) ([]*m
 		}
 
 		relPath, _ := filepath.Rel(absRoot, path)
-		fCtx, err := cot.CollectDefinitions(root, relPath, source)
+		fc, err := cot.CollectDefinitions(root, relPath, source)
 		if err != nil {
 			return err
 		}
 
-		globalContext.RegisterFileContext(fCtx)
+		gc.RegisterFileContext(fc)
 		return nil
 	})
 	if err != nil {
 		return nil, nil, err
 	}
 
-	// --- 阶段 2: 拓扑链接 (Linker) ---
-	linker, err := core.GetLinker(fp.Language)
+	// --- 阶段 2: 符号绑定 (Binder) ---
+	binder, err := core.GetBinder(fp.Language)
 	if err != nil {
 		return nil, nil, err
 	}
-	hierarchyRels := linker.LinkHierarchy(globalContext)
+	binder.BindSymbols(gc)
 
 	// --- 阶段 3: 并行提取依赖 (Extractor) ---
-	var allRelations []*model.DependencyRelation
-	// 初始放入层级关系（注意：根据讨论，Contain 关系通常不作为噪音过滤）
-	allRelations = append(allRelations, hierarchyRels...)
-
 	var mu sync.Mutex
 	err = fp.runParallel(filePaths, func(path string, p parser.Parser) error {
 		ext, err := core.GetExtractor(fp.Language)
@@ -85,7 +81,7 @@ func (fp *FileProcessor) ProcessFiles(rootPath string, filePaths []string) ([]*m
 		}
 
 		relPath, _ := filepath.Rel(absRoot, path)
-		rels, err := ext.Extract(relPath, globalContext)
+		rels, err := ext.Extract(relPath, gc)
 		if err != nil {
 			return err
 		}
@@ -107,11 +103,18 @@ func (fp *FileProcessor) ProcessFiles(rootPath string, filePaths []string) ([]*m
 		return nil, nil, err
 	}
 
-	// --- 阶段 4: 噪音过滤 (Noise Filtering) ---
-	// 在所有关系收集完毕后，根据设定的 Level 进行统一清洗
+	// --- 阶段 4: 拓扑链接 (Linker) ---
+	linker, err := core.GetLinker(fp.Language)
+	if err != nil {
+		return nil, nil, err
+	}
+	hierarchyRelations := linker.LinkHierarchy(gc)
+	allRelations = append(allRelations, hierarchyRelations...)
+
+	// --- 阶段 5: 噪音过滤 (Noise Filtering) ---
 	filteredRelations := fp.filterNoise(allRelations)
 
-	return filteredRelations, globalContext, nil
+	return filteredRelations, gc, nil
 }
 
 // filterNoise 调用语言特定的过滤器进行数据清洗

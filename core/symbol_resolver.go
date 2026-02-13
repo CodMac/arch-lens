@@ -20,6 +20,9 @@ type SymbolResolver interface {
 	// RegisterPackage 注册包/命名空间逻辑
 	// (Java 需要拆分点号，Go 只需要单层)
 	RegisterPackage(gc *GlobalContext, packageName string)
+
+	// IsPrimitive 是否为基础类型
+	IsPrimitive(t string) bool
 }
 
 var symbolResolverMap = make(map[Language]SymbolResolver)
