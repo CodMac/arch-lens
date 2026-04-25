@@ -49,7 +49,7 @@ public class AccountService {
 | **Weighted Methods per Class** | **WMC** | **计算方式**：$WMC = \sum_{i=1}^{n} c_i$。其中 $n$ 是方法数，$c_i$ 是第 $i$ 个方法的**圈复杂度**。圈复杂度基于控制流图中的节点和边，简单理解为：每出现一个 `if`、`while`、`for`、`case`，该方法的值 $+1$。 | $> 47$ |
 | **Access to Foreign Data** | **ATFD** | **计算方式**：统计该类所有方法中，调用的**非自身类**的属性或 Getter 方法的去重总数。例如调用了 `User.name`、`Order.id`、`Order.price`，则 ATFD 为 2（User 和 Order）。 | $> 5$ |
 | **Tight Class Cohesion** | **TCC** | **计算方式**：$TCC = \frac{NDP}{NP}$。$NP$ 为类中方法对的总数：$n(n-1)/2$；$NDP$ 为**直接连接**的方法对数（即两个方法访问了至少一个共同的成员变量）。 | $< 0.33$ |
-| **Lack of Cohesion in Methods** | **LCOM** | **计算方式**：$LCOM = |P| - |Q|$（若 $|P| > |Q|$ 否则为 0）。$P$ 是不共享成员变量的方法对集合，$Q$ 是共享成员变量的方法对集合。 | 值越大越差 |
+| **Lack of Cohesion in Methods** | **LCOM** | **计算方式**：$LCOM = \|P\| - \|Q\|$（若 $\|P\| > \|Q\|$ 否则为 0）。$P$ 是不共享成员变量的方法对集合，$Q$ 是共享成员变量的方法对集合。 | 值越大越差 |
 
 ### TCC 计算详解示例：
 假设类有 3 个方法 {M1, M2, M3}，成员变量有 {V1, V2}。
